@@ -165,6 +165,14 @@ public:
   LLVM_ABI bool processLoop(Loop *L);
 };
 
+struct VPlanTestPass : public PassInfoMixin<VPlanTestPass> {
+  std::string Pipeline;
+
+public:
+  VPlanTestPass(StringRef Pipeline) : Pipeline(Pipeline) {}
+  LLVM_ABI PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+};
+
 /// Reports a vectorization failure: print \p DebugMsg for debugging
 /// purposes along with the corresponding optimization remark \p RemarkName.
 /// If \p I is passed, it is an instruction that prevents vectorization.

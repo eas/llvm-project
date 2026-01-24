@@ -18,6 +18,7 @@
 #include "VPlanTransforms.h"
 #include "VPlanUtils.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/STLExtras.h"
 
 using namespace llvm;
 using namespace VPlanPatternMatch;
@@ -257,23 +258,15 @@ void VPPredicator::convertPhisToBlends(VPBasicBlock *VPBB) {
   }
 }
 
-void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan, bool FoldTail) {
-  VPRegionBlock *LoopRegion = Plan.getVectorLoopRegion();
-  // Scan the body of the loop in a topological order to visit each basic block
-  // after having visited its predecessor basic blocks.
-  VPBasicBlock *Header = LoopRegion->getEntryBasicBlock();
+// So far, \p EntryBlock is processed in the caller, that can/should be changed
+// once `FoldTail` is generalized to any loop with divergent backedge.
+static void predicateAndLinearize(VPPredicator &Predicator, VPBlockBase *EntryBlock) {
   ReversePostOrderTraversal<VPBlockShallowTraversalWrapper<VPBlockBase *>> RPOT(
-      Header);
-  VPPredicator Predicator;
+      EntryBlock);
   for (VPBlockBase *VPB : RPOT) {
     // Non-outer regions with VPBBs only are supported at the moment.
     auto *VPBB = cast<VPBasicBlock>(VPB);
-    // Introduce the mask for VPBB, which may introduce needed edge masks, and
-    // convert all phi recipes of VPBB to blend recipes unless VPBB is the
-    // header.
-    if (VPBB == Header) {
-      Predicator.createHeaderMask(Header, FoldTail);
-    } else {
+    if (VPB != *RPOT.begin()) {
       Predicator.createBlockInMask(VPBB);
       Predicator.convertPhisToBlends(VPBB);
     }
@@ -305,6 +298,16 @@ void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan, bool FoldTail) {
 
     PrevVPBB = VPBB;
   }
+}
+
+void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan, bool FoldTail) {
+  VPRegionBlock *LoopRegion = Plan.getVectorLoopRegion();
+  // Scan the body of the loop in a topological order to visit each basic block
+  // after having visited its predecessor basic blocks.
+  VPBasicBlock *Header = LoopRegion->getEntryBasicBlock();
+  VPPredicator Predicator;
+  Predicator.createHeaderMask(Header, FoldTail);
+  predicateAndLinearize(Predicator, Header);
 
   // If we folded the tail and introduced a header mask, any extract of the
   // last element must be updated to extract from the last active lane of the
@@ -332,4 +335,9 @@ void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan, bool FoldTail) {
       R.getVPSingleValue()->replaceAllUsesWith(Ext);
     }
   }
+}
+
+void VPlanTransforms::predicateTestVPlan(VPlan &Plan) {
+  VPPredicator Predicator;
+  predicateAndLinearize(Predicator, Plan.getEntry());
 }

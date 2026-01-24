@@ -126,6 +126,9 @@ struct VPlanTransforms {
   buildVPlan0(Loop *TheLoop, LoopInfo &LI, Type *InductionTy, DebugLoc IVDL,
               PredicatedScalarEvolution &PSE, LoopVersioning *LVer = nullptr);
 
+  LLVM_ABI_FOR_TEST static std::unique_ptr<VPlan> buildTestVPlan(Function *F,
+                                                                 LoopInfo &LI);
+
   /// Replace VPPhi recipes in \p Plan's header with corresponding
   /// VPHeaderPHIRecipe subclasses for inductions, reductions, and
   /// fixed-order recurrences. This processes all header phis and creates
@@ -439,6 +442,8 @@ struct VPlanTransforms {
   /// \p Plan. If \p FoldTail is true, create a mask guarding the loop
   /// header, otherwise use all-true for the header mask.
   static void introduceMasksAndLinearize(VPlan &Plan, bool FoldTail);
+
+  static void predicateTestVPlan(VPlan &Plan);
 
   /// Add branch weight metadata, if the \p Plan's middle block is terminated by
   /// a BranchOnCond recipe.

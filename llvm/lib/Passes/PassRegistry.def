@@ -630,6 +630,10 @@ FUNCTION_PASS_WITH_PARAMS(
     "no-interleave-forced-only;interleave-forced-only;no-vectorize-forced-only;"
     "vectorize-forced-only")
 FUNCTION_PASS_WITH_PARAMS(
+    "vplan-test", "VPlanTestPass",
+    [](StringRef Pipeline) { return VPlanTestPass{Pipeline}; },
+    [](StringRef Args) -> Expected<StringRef> { return Args; }, "print")
+FUNCTION_PASS_WITH_PARAMS(
     "lower-allow-check", "LowerAllowCheckPass",
     [](LowerAllowCheckPass::Options Opts) { return LowerAllowCheckPass(Opts); },
     parseLowerAllowCheckPassOptions, "cutoffs[indices]=N")

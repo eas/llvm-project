@@ -4458,7 +4458,7 @@ class VPlan {
   VPBasicBlock *Entry;
 
   /// VPIRBasicBlock wrapping the header of the original scalar loop.
-  VPIRBasicBlock *ScalarHeader;
+  VPIRBasicBlock *ScalarHeader = nullptr;
 
   /// Immutable list of VPIRBasicBlocks wrapping the exit blocks of the original
   /// scalar loop. Note that some exit blocks may be unreachable at the moment,
@@ -4521,6 +4521,9 @@ public:
     setEntry(createVPBasicBlock("preheader"));
     ScalarHeader = createVPIRBasicBlock(ScalarHeaderBB);
   }
+
+  /// Construct a test only VPlan from \p F.
+  VPlan(Function *F) { setName("VPlan for " + F->getName()); }
 
   LLVM_ABI_FOR_TEST ~VPlan();
 

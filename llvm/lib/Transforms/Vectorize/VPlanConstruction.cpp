@@ -37,12 +37,13 @@ namespace {
 class PlainCFGBuilder {
   // The outermost loop of the input loop nest considered for vectorization.
   Loop *TheLoop;
+  Function *TheFunction; // For VPlanTestPass.
 
   // Loop Info analysis.
   LoopInfo *LI;
 
   // Loop versioning for alias metadata.
-  LoopVersioning *LVer;
+  LoopVersioning *LVer = nullptr;
 
   // Vectorization plan that we are working on.
   std::unique_ptr<VPlan> Plan;
@@ -71,12 +72,18 @@ class PlainCFGBuilder {
   VPValue *getOrCreateVPOperand(Value *IRVal);
   void createVPInstructionsForVPBB(VPBasicBlock *VPBB, BasicBlock *BB);
 
+  void buildVPBB(BasicBlock *BB);
+
 public:
   PlainCFGBuilder(Loop *Lp, LoopInfo *LI, LoopVersioning *LVer)
       : TheLoop(Lp), LI(LI), LVer(LVer), Plan(std::make_unique<VPlan>(Lp)) {}
 
+  PlainCFGBuilder(Function *F, LoopInfo *LI)
+      : TheFunction(F), LI(LI), Plan(std::make_unique<VPlan>(F)) {}
+
   /// Build plain CFG for TheLoop and connect it to Plan's entry.
   std::unique_ptr<VPlan> buildPlainCFG();
+  std::unique_ptr<VPlan> buildPlainCFGForTestVPlan();
 };
 } // anonymous namespace
 
@@ -273,6 +280,46 @@ void PlainCFGBuilder::createVPInstructionsForVPBB(VPBasicBlock *VPBB,
   }
 }
 
+void PlainCFGBuilder::buildVPBB(BasicBlock *BB) {
+  // Create or retrieve the VPBasicBlock for this BB.
+  VPBasicBlock *VPBB = getOrCreateVPBB(BB);
+  // Set VPBB predecessors in the same order as they are in the incoming BB.
+  setVPBBPredsFromBB(VPBB, BB);
+
+  // Create VPInstructions for BB.
+  createVPInstructionsForVPBB(VPBB, BB);
+
+  if (isa<ReturnInst>(BB->getTerminator())) {
+    assert(TheLoop == nullptr &&
+           "ReturnInst is only expected when running VPlanTestPass!");
+    return;
+  }
+
+  // Set VPBB successors. We create empty VPBBs for successors if they don't
+  // exist already. Recipes will be created when the successor is visited
+  // during the RPO traversal.
+  if (auto *SI = dyn_cast<SwitchInst>(BB->getTerminator())) {
+    SmallVector<VPBlockBase *> Succs = {getOrCreateVPBB(SI->getDefaultDest())};
+    for (auto Case : SI->cases())
+      Succs.push_back(getOrCreateVPBB(Case.getCaseSuccessor()));
+    VPBB->setSuccessors(Succs);
+    return;
+  }
+  auto *BI = cast<BranchInst>(BB->getTerminator());
+  unsigned NumSuccs = succ_size(BB);
+  if (NumSuccs == 1) {
+    VPBB->setOneSuccessor(getOrCreateVPBB(BB->getSingleSuccessor()));
+    return;
+  }
+  assert(BI->isConditional() && NumSuccs == 2 && BI->isConditional() &&
+         "block must have conditional branch with 2 successors");
+
+  BasicBlock *IRSucc0 = BI->getSuccessor(0);
+  BasicBlock *IRSucc1 = BI->getSuccessor(1);
+  VPBasicBlock *Successor0 = getOrCreateVPBB(IRSucc0);
+  VPBasicBlock *Successor1 = getOrCreateVPBB(IRSucc1);
+  VPBB->setTwoSuccessors(Successor0, Successor1);
+}
 // Main interface to build the plain CFG.
 std::unique_ptr<VPlan> PlainCFGBuilder::buildPlainCFG() {
   VPIRBasicBlock *Entry = cast<VPIRBasicBlock>(Plan->getEntry());
@@ -302,39 +349,7 @@ std::unique_ptr<VPlan> PlainCFGBuilder::buildPlainCFG() {
   RPO.perform(LI);
 
   for (BasicBlock *BB : RPO) {
-    // Create or retrieve the VPBasicBlock for this BB.
-    VPBasicBlock *VPBB = getOrCreateVPBB(BB);
-    // Set VPBB predecessors in the same order as they are in the incoming BB.
-    setVPBBPredsFromBB(VPBB, BB);
-
-    // Create VPInstructions for BB.
-    createVPInstructionsForVPBB(VPBB, BB);
-
-    // Set VPBB successors. We create empty VPBBs for successors if they don't
-    // exist already. Recipes will be created when the successor is visited
-    // during the RPO traversal.
-    if (auto *SI = dyn_cast<SwitchInst>(BB->getTerminator())) {
-      SmallVector<VPBlockBase *> Succs = {
-          getOrCreateVPBB(SI->getDefaultDest())};
-      for (auto Case : SI->cases())
-        Succs.push_back(getOrCreateVPBB(Case.getCaseSuccessor()));
-      VPBB->setSuccessors(Succs);
-      continue;
-    }
-    auto *BI = cast<BranchInst>(BB->getTerminator());
-    unsigned NumSuccs = succ_size(BB);
-    if (NumSuccs == 1) {
-      VPBB->setOneSuccessor(getOrCreateVPBB(BB->getSingleSuccessor()));
-      continue;
-    }
-    assert(BI->isConditional() && NumSuccs == 2 && BI->isConditional() &&
-           "block must have conditional branch with 2 successors");
-
-    BasicBlock *IRSucc0 = BI->getSuccessor(0);
-    BasicBlock *IRSucc1 = BI->getSuccessor(1);
-    VPBasicBlock *Successor0 = getOrCreateVPBB(IRSucc0);
-    VPBasicBlock *Successor1 = getOrCreateVPBB(IRSucc1);
-    VPBB->setTwoSuccessors(Successor0, Successor1);
+    buildVPBB(BB);
   }
 
   for (auto *EB : Plan->getExitBlocks())
@@ -366,6 +381,18 @@ std::unique_ptr<VPlan> PlainCFGBuilder::buildPlainCFG() {
   }
 
   LLVM_DEBUG(Plan->setName("Plain CFG\n"); dbgs() << *Plan);
+  return std::move(Plan);
+}
+
+std::unique_ptr<VPlan> PlainCFGBuilder::buildPlainCFGForTestVPlan() {
+  ReversePostOrderTraversal<Function *> RPOT(TheFunction);
+  for (BasicBlock *BB : RPOT) {
+    buildVPBB(BB);
+  }
+
+  fixHeaderPhis();
+  Plan->setEntry(BB2VPBB[&TheFunction->getEntryBlock()]);
+
   return std::move(Plan);
 }
 
@@ -600,6 +627,10 @@ VPlanTransforms::buildVPlan0(Loop *TheLoop, LoopInfo &LI, Type *InductionTy,
 
   RUN_VPLAN_PASS_NO_VERIFY(printAfterInitialConstruction, *VPlan0);
   return VPlan0;
+}
+std::unique_ptr<VPlan> VPlanTransforms::buildTestVPlan(Function *F,
+                                                       LoopInfo &LI) {
+  return PlainCFGBuilder{F, &LI}.buildPlainCFGForTestVPlan();
 }
 
 /// Creates a VPWidenIntOrFpInductionRecipe or VPWidenPointerInductionRecipe

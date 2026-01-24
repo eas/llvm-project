@@ -10243,3 +10243,27 @@ void LoopVectorizePass::printPipeline(
   OS << (VectorizeOnlyWhenForced ? "" : "no-") << "vectorize-forced-only;";
   OS << '>';
 }
+
+PreservedAnalyses VPlanTestPass::run(Function &F, FunctionAnalysisManager &AM) {
+  auto &LI = AM.getResult<LoopAnalysis>(F);
+
+  std::unique_ptr<VPlan> Plan = VPlanTransforms::buildTestVPlan(&F, LI);
+  Plan->setUF(1);
+  SmallVector<StringRef> Transforms;
+  StringRef{Pipeline}.split(Transforms, ";", -1, false);
+  for (StringRef Transform : Transforms) {
+    if (Transform == "predicator") {
+      RUN_VPLAN_PASS(VPlanTransforms::predicateTestVPlan, *Plan);
+      continue;
+    }
+
+    errs() << "Don't know how to perform <" << Transform
+           << "> on Test VPlan!\n";
+    abort();
+  }
+
+  // This line will be matched by `update_analyze_test_checks.py`:
+  outs() << "Test VPlan for function '" << F.getName() << "'\n";
+  outs() << *Plan << '\n';
+  return PreservedAnalyses::all();
+}

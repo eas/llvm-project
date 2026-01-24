@@ -494,6 +494,9 @@ unsigned VPInstruction::getNumOperandsForOpcode() const {
   case VPInstruction::ExtractLane:
     // Cannot determine the number of operands from the opcode.
     return -1u;
+  case Instruction::Ret:
+    // For VPlanTestPass only:
+    return -1;
   }
   llvm_unreachable("all cases should be handled above");
 }
