@@ -388,8 +388,8 @@ TEST_F(VPBasicBlockTest, TraversingIteratorTest) {
 
     // Successors of R1.
     SmallVector<const VPBlockBase *> FromIterator(
-        VPAllSuccessorsIterator<VPBlockBase *>(R1),
-        VPAllSuccessorsIterator<VPBlockBase *>::end(R1));
+        VPHCFGIterator<VPBlockBase *>(R1),
+        VPHCFGIterator<VPBlockBase *>::end(R1));
     EXPECT_EQ(1u, FromIterator.size());
     EXPECT_EQ(R1BB1, FromIterator[0]);
 

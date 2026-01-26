@@ -25,90 +25,130 @@ namespace llvm {
 // GraphTraits specializations for VPlan Hierarchical Control-Flow Graphs     //
 //===----------------------------------------------------------------------===//
 
-/// Iterator to traverse all successors of a VPBlockBase node. This includes the
-/// entry node of VPRegionBlocks. Exit blocks of a region implicitly have their
-/// parent region's successors. This ensures all blocks in a region are visited
-/// before any blocks in a successor region when doing a reverse post-order
-// traversal of the graph. Region blocks themselves traverse only their entries
-// directly and not their successors. Those will be traversed when a region's
-// exiting block is traversed
-template <typename BlockPtrTy>
-class VPAllSuccessorsIterator
-    : public iterator_facade_base<VPAllSuccessorsIterator<BlockPtrTy>,
+/// Iterator to traverse all successors/predecessors of a VPBlockBase node, such
+/// that:
+///
+///     A
+///     |
+///  +-----+ <- Region R
+///  |  b  |
+///  |     |
+///  | ... |
+///  |     |
+///  |  e  |
+///  +-----+
+///     |
+///     B
+///
+///  children(A) == {R} ; Forward == true
+///  children(R) == {b} ; Forward == true
+///  children(e) == {B} ; Forward == true
+///
+///  children(B) == {R} ; Forward == false
+///  children(R) == {e} ; Forward == false
+///  children(b) == {A} ; Forward == false
+///
+/// This ensures that all blocks of the region are visited before continuing
+/// traversal outside the region when doing a reverse post-order traversal of
+/// the VPlan.
+///
+template <typename BlockPtrTy, bool Forward = true>
+class VPHCFGIterator
+    : public iterator_facade_base<VPHCFGIterator<BlockPtrTy>,
                                   std::bidirectional_iterator_tag,
                                   VPBlockBase> {
   BlockPtrTy Block;
-  /// Index of the current successor. For VPBasicBlock nodes, this simply is the
-  /// index for the successor array. For VPRegionBlock, SuccessorIdx == 0 is
-  /// used for the region's entry block, and SuccessorIdx - 1 are the indices
-  /// for the successor array.
-  size_t SuccessorIdx;
+  /// Index of the current successor/predecessor.
+  ///
+  /// For VPBasicBlock nodes, this simply is the index for the
+  /// successors/predecessors array. For VPRegionBlock, EdgeIdx == 0 is used for
+  /// the region's entry/exiting block, and EdgeIdx - 1 are the indices for the
+  /// successors/predecessors array.
+  size_t EdgeIdx;
 
-  static BlockPtrTy getBlockWithSuccs(BlockPtrTy Current) {
-    while (Current && Current->getNumSuccessors() == 0)
+  static auto getNumOutgoingEdges(BlockPtrTy Current) {
+    if constexpr (Forward)
+      return Current->getNumSuccessors();
+    else
+      return Current->getNumPredecessors();
+  }
+
+  static decltype(auto) getOutgoingEdges(BlockPtrTy Current) {
+    if constexpr (Forward)
+      return Current->getSuccessors();
+    else
+      return Current->getPredecessors();
+  }
+
+  static BlockPtrTy getBlockWithOutgoingEdges(BlockPtrTy Current) {
+    while (Current && getNumOutgoingEdges(Current) == 0)
       Current = Current->getParent();
     return Current;
   }
 
   /// Templated helper to dereference successor \p SuccIdx of \p Block. Used by
   /// both the const and non-const operator* implementations.
-  template <typename T1> static T1 deref(T1 Block, unsigned SuccIdx) {
+  template <typename T1> static T1 deref(T1 Block, unsigned EdgeIdx) {
     if (auto *R = dyn_cast<VPRegionBlock>(Block)) {
-      assert(SuccIdx == 0);
-      return R->getEntry();
+      assert(EdgeIdx == 0);
+      if constexpr (Forward)
+        return R->getEntry();
+      else
+        return R->getExiting();
     }
 
     // For exit blocks, use the next parent region with successors.
-    return getBlockWithSuccs(Block)->getSuccessors()[SuccIdx];
+    return getOutgoingEdges(getBlockWithOutgoingEdges(Block))[EdgeIdx];
   }
 
 public:
   /// Used by iterator_facade_base with bidirectional_iterator_tag.
   using reference = BlockPtrTy;
 
-  VPAllSuccessorsIterator(BlockPtrTy Block, size_t Idx = 0)
-      : Block(Block), SuccessorIdx(Idx) {}
-  VPAllSuccessorsIterator(const VPAllSuccessorsIterator &Other)
-      : Block(Other.Block), SuccessorIdx(Other.SuccessorIdx) {}
+  VPHCFGIterator(BlockPtrTy Block, size_t Idx = 0)
+      : Block(Block), EdgeIdx(Idx) {}
+  VPHCFGIterator(const VPHCFGIterator &Other)
+      : Block(Other.Block), EdgeIdx(Other.EdgeIdx) {}
 
-  VPAllSuccessorsIterator &operator=(const VPAllSuccessorsIterator &R) {
+  VPHCFGIterator &operator=(const VPHCFGIterator &R) {
     Block = R.Block;
-    SuccessorIdx = R.SuccessorIdx;
+    EdgeIdx = R.EdgeIdx;
     return *this;
   }
 
-  static VPAllSuccessorsIterator end(BlockPtrTy Block) {
+  static VPHCFGIterator end(BlockPtrTy Block) {
     if (auto *R = dyn_cast<VPRegionBlock>(Block)) {
-      // Traverse through the region's entry node.
+      // Traverse through the region's entry/exiting (based on Forward) node.
       return {R, 1};
     }
-    BlockPtrTy ParentWithSuccs = getBlockWithSuccs(Block);
-    unsigned NumSuccessors =
-        ParentWithSuccs ? ParentWithSuccs->getNumSuccessors() : 0;
-    return {Block, NumSuccessors};
+    BlockPtrTy ParentWithOutgoingEdges = getBlockWithOutgoingEdges(Block);
+    unsigned NumOutgoingEdges =
+        ParentWithOutgoingEdges ? getNumOutgoingEdges(ParentWithOutgoingEdges)
+                                : 0;
+    return {Block, NumOutgoingEdges};
   }
 
-  bool operator==(const VPAllSuccessorsIterator &R) const {
-    return Block == R.Block && SuccessorIdx == R.SuccessorIdx;
+  bool operator==(const VPHCFGIterator &R) const {
+    return Block == R.Block && EdgeIdx == R.EdgeIdx;
   }
 
-  const VPBlockBase *operator*() const { return deref(Block, SuccessorIdx); }
+  const VPBlockBase *operator*() const { return deref(Block, EdgeIdx); }
 
-  BlockPtrTy operator*() { return deref(Block, SuccessorIdx); }
+  BlockPtrTy operator*() { return deref(Block, EdgeIdx); }
 
-  VPAllSuccessorsIterator &operator++() {
-    SuccessorIdx++;
+  VPHCFGIterator &operator++() {
+    EdgeIdx++;
     return *this;
   }
 
-  VPAllSuccessorsIterator &operator--() {
-    SuccessorIdx--;
+  VPHCFGIterator &operator--() {
+    EdgeIdx--;
     return *this;
   }
 
-  VPAllSuccessorsIterator operator++(int X) {
-    VPAllSuccessorsIterator Orig = *this;
-    SuccessorIdx++;
+  VPHCFGIterator operator++(int X) {
+    VPHCFGIterator Orig = *this;
+    EdgeIdx++;
     return Orig;
   }
 };
@@ -129,7 +169,7 @@ public:
 /// reverse post-order traversal of the graph.
 template <> struct GraphTraits<VPBlockDeepTraversalWrapper<VPBlockBase *>> {
   using NodeRef = VPBlockBase *;
-  using ChildIteratorType = VPAllSuccessorsIterator<VPBlockBase *>;
+  using ChildIteratorType = VPHCFGIterator<VPBlockBase *>;
 
   static NodeRef getEntryNode(VPBlockDeepTraversalWrapper<VPBlockBase *> N) {
     return N.getEntry();
@@ -147,7 +187,7 @@ template <> struct GraphTraits<VPBlockDeepTraversalWrapper<VPBlockBase *>> {
 template <>
 struct GraphTraits<VPBlockDeepTraversalWrapper<const VPBlockBase *>> {
   using NodeRef = const VPBlockBase *;
-  using ChildIteratorType = VPAllSuccessorsIterator<const VPBlockBase *>;
+  using ChildIteratorType = VPHCFGIterator<const VPBlockBase *>;
 
   static NodeRef
   getEntryNode(VPBlockDeepTraversalWrapper<const VPBlockBase *> N) {
@@ -257,7 +297,7 @@ vp_depth_first_deep(const VPBlockBase *G) {
 
 template <> struct GraphTraits<VPBlockBase *> {
   using NodeRef = VPBlockBase *;
-  using ChildIteratorType = VPAllSuccessorsIterator<VPBlockBase *>;
+  using ChildIteratorType = VPHCFGIterator<VPBlockBase *>;
 
   static NodeRef getEntryNode(NodeRef N) { return N; }
 
@@ -272,7 +312,7 @@ template <> struct GraphTraits<VPBlockBase *> {
 
 template <> struct GraphTraits<const VPBlockBase *> {
   using NodeRef = const VPBlockBase *;
-  using ChildIteratorType = VPAllSuccessorsIterator<const VPBlockBase *>;
+  using ChildIteratorType = VPHCFGIterator<const VPBlockBase *>;
 
   static NodeRef getEntryNode(NodeRef N) { return N; }
 
