@@ -41,10 +41,9 @@ define void @diamond_phi(ptr %a) {
 ; CHECK-NEXT:  Successor(s): bb4
 ; CHECK-EMPTY:
 ; CHECK-NEXT:  bb4:
-; CHECK-NEXT:    EMIT [[VP2:vp<%.*>]] = or [[VP1]], ir<%c0>
 ; CHECK-NEXT:    BLEND ir<%phi4> = ir<%add2> ir<%add1>/ir<%c0>
-; CHECK-NEXT:    EMIT store ir<%phi4>, ir<%gep>, [[VP2]]
-; CHECK-NEXT:    EMIT ret [[VP2]]
+; CHECK-NEXT:    EMIT store ir<%phi4>, ir<%gep>
+; CHECK-NEXT:    EMIT ret
 ; CHECK-NEXT:  No successors
 ; CHECK-NEXT:  }
 ; CHECK-EMPTY:
@@ -55,7 +54,7 @@ bb0:
 ;       bb1  bb2
 ;         \  /
 ;          bb4
-; TODO: bb4 should be unmasked.
+; This test verifies that bb4 will be unmasked.
   %lane = call i64 @llvm.vplan.test.lane()
   %gep = getelementptr i64, ptr %a, i64 %lane
   %c0 = icmp sle i64 %lane, 0
@@ -99,17 +98,15 @@ define void @mask_reuse(ptr %a) {
 ; CHECK-NEXT:  bb3:
 ; CHECK-NEXT:    EMIT [[VP2:vp<%.*>]] = not ir<%c1>
 ; CHECK-NEXT:    EMIT [[VP3:vp<%.*>]] = logical-and ir<%c0>, [[VP2]]
-; CHECK-NEXT:    EMIT [[VP4:vp<%.*>]] = or [[VP1]], [[VP3]]
 ; CHECK-NEXT:    BLEND ir<%phi3> = ir<%add2> ir<%add1>/[[VP3]]
-; CHECK-NEXT:    EMIT ir<%add3> = add ir<%lane>, ir<3>, [[VP4]]
+; CHECK-NEXT:    EMIT ir<%add3> = add ir<%lane>, ir<3>, ir<%c0>
 ; CHECK-NEXT:  Successor(s): bb4
 ; CHECK-EMPTY:
 ; CHECK-NEXT:  bb4:
-; CHECK-NEXT:    EMIT [[VP5:vp<%.*>]] = not ir<%c0>
-; CHECK-NEXT:    EMIT [[VP6:vp<%.*>]] = or [[VP4]], [[VP5]]
-; CHECK-NEXT:    BLEND ir<%phi4> = ir<%add3> ir<%add0>/[[VP5]]
-; CHECK-NEXT:    EMIT store ir<%phi4>, ir<%gep>, [[VP6]]
-; CHECK-NEXT:    EMIT ret [[VP6]]
+; CHECK-NEXT:    EMIT [[VP4:vp<%.*>]] = not ir<%c0>
+; CHECK-NEXT:    BLEND ir<%phi4> = ir<%add3> ir<%add0>/[[VP4]]
+; CHECK-NEXT:    EMIT store ir<%phi4>, ir<%gep>
+; CHECK-NEXT:    EMIT ret
 ; CHECK-NEXT:  No successors
 ; CHECK-NEXT:  }
 ; CHECK-EMPTY:
@@ -124,7 +121,7 @@ bb0:
 ;       bb3  /
 ;         \ /
 ;         bb4
-; TODO: bb3 can reuse bb1's mask and bb4 should be unmasked.
+; Verify that bb3 shares bb1's mask and bb4 is unmasked.
   %lane = call i64 @llvm.vplan.test.lane()
   %gep = getelementptr i64, ptr %a, i64 %lane
   %c0 = icmp sle i64 %lane, 0
@@ -193,21 +190,20 @@ define void @optimized_mask(ptr %a) {
 ; CHECK-EMPTY:
 ; CHECK-NEXT:  bb5:
 ; CHECK-NEXT:    EMIT [[VP7:vp<%.*>]] = logical-and [[VP1]], ir<%c6>
-; CHECK-NEXT:    EMIT [[VP8:vp<%.*>]] = or [[VP7]], [[VP6]]
-; CHECK-NEXT:    EMIT [[VP9:vp<%.*>]] = not ir<%c3>
-; CHECK-NEXT:    EMIT [[VP10:vp<%.*>]] = logical-and [[VP3]], [[VP9]]
-; CHECK-NEXT:    EMIT [[VP11:vp<%.*>]] = or [[VP8]], [[VP10]]
-; CHECK-NEXT:    BLEND ir<%phi5> = ir<%add6> ir<%add4>/[[VP6]] ir<%add3>/[[VP10]]
+; CHECK-NEXT:    EMIT [[VP8:vp<%.*>]] = not ir<%c3>
+; CHECK-NEXT:    EMIT [[VP9:vp<%.*>]] = logical-and [[VP3]], [[VP8]]
+; CHECK-NEXT:    EMIT [[VP10:vp<%.*>]] = or [[VP7]], [[VP6]]
+; CHECK-NEXT:    EMIT [[VP11:vp<%.*>]] = or [[VP10]], [[VP9]]
+; CHECK-NEXT:    BLEND ir<%phi5> = ir<%add6> ir<%add4>/[[VP6]] ir<%add3>/[[VP9]]
 ; CHECK-NEXT:    EMIT ir<%add5> = add ir<%lane>, ir<5>, [[VP11]]
 ; CHECK-NEXT:  Successor(s): bb7
 ; CHECK-EMPTY:
 ; CHECK-NEXT:  bb7:
 ; CHECK-NEXT:    EMIT [[VP12:vp<%.*>]] = not ir<%c6>
 ; CHECK-NEXT:    EMIT [[VP13:vp<%.*>]] = logical-and [[VP1]], [[VP12]]
-; CHECK-NEXT:    EMIT [[VP14:vp<%.*>]] = or [[VP13]], [[VP11]]
 ; CHECK-NEXT:    BLEND ir<%phi7> = ir<%add6> ir<%add5>/[[VP11]]
-; CHECK-NEXT:    EMIT store ir<%phi7>, ir<%gep>, [[VP14]]
-; CHECK-NEXT:    EMIT ret [[VP14]]
+; CHECK-NEXT:    EMIT store ir<%phi7>, ir<%gep>
+; CHECK-NEXT:    EMIT ret
 ; CHECK-NEXT:  No successors
 ; CHECK-NEXT:  }
 ; CHECK-EMPTY:

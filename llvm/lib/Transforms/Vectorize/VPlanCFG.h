@@ -131,6 +131,9 @@ public:
   bool operator==(const VPHCFGIterator &R) const {
     return Block == R.Block && EdgeIdx == R.EdgeIdx;
   }
+  bool operator!=(const VPHCFGIterator &R) const {
+    return !(*this == R);
+  }
 
   const VPBlockBase *operator*() const { return deref(Block, EdgeIdx); }
 
@@ -330,18 +333,18 @@ template <> struct GraphTraits<const VPBlockBase *> {
 /// predecessors recursively through regions.
 template <> struct GraphTraits<Inverse<VPBlockBase *>> {
   using NodeRef = VPBlockBase *;
-  using ChildIteratorType = SmallVectorImpl<VPBlockBase *>::iterator;
+  using ChildIteratorType = VPHCFGIterator<VPBlockBase *, /*Forward=*/false>;
 
   static NodeRef getEntryNode(Inverse<NodeRef> B) {
-    llvm_unreachable("not implemented");
+    return B.Graph;
   }
 
   static inline ChildIteratorType child_begin(NodeRef N) {
-    llvm_unreachable("not implemented");
+    return ChildIteratorType{N};
   }
 
   static inline ChildIteratorType child_end(NodeRef N) {
-    llvm_unreachable("not implemented");
+    return ChildIteratorType::end(N);
   }
 };
 

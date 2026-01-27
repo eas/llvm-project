@@ -26,7 +26,7 @@ define void @test_stores_noalias_via_rt_checks_after_loads(ptr %dst, ptr %src, p
 ; CHECK-NEXT:    [[TMP5:%.*]] = add i32 [[INDEX]], 1
 ; CHECK-NEXT:    [[TMP6:%.*]] = getelementptr inbounds i32, ptr [[COND]], i32 [[TMP4]]
 ; CHECK-NEXT:    [[WIDE_LOAD:%.*]] = load <2 x i32>, ptr [[TMP6]], align 4, !alias.scope [[META0:![0-9]+]]
-; CHECK-NEXT:    [[TMP7:%.*]] = icmp ule <2 x i32> [[WIDE_LOAD]], splat (i32 11)
+; CHECK-NEXT:    [[TMP3:%.*]] = icmp ugt <2 x i32> [[WIDE_LOAD]], splat (i32 11)
 ; CHECK-NEXT:    [[TMP10:%.*]] = getelementptr inbounds i32, ptr [[SRC]], i32 [[TMP4]]
 ; CHECK-NEXT:    [[TMP15:%.*]] = getelementptr inbounds i32, ptr [[SRC]], i32 [[TMP5]]
 ; CHECK-NEXT:    [[TMP9:%.*]] = load i32, ptr [[TMP10]], align 4, !alias.scope [[META3:![0-9]+]]
@@ -37,7 +37,7 @@ define void @test_stores_noalias_via_rt_checks_after_loads(ptr %dst, ptr %src, p
 ; CHECK-NEXT:    [[TMP36:%.*]] = add <2 x i32> [[TMP17]], splat (i32 10)
 ; CHECK-NEXT:    [[TMP21:%.*]] = getelementptr inbounds i32, ptr [[DST]], i32 [[TMP4]]
 ; CHECK-NEXT:    [[TMP24:%.*]] = getelementptr inbounds i32, ptr [[DST]], i32 [[TMP5]]
-; CHECK-NEXT:    [[TMP14:%.*]] = select <2 x i1> [[TMP7]], <2 x i32> [[TMP36]], <2 x i32> [[TMP19]]
+; CHECK-NEXT:    [[TMP14:%.*]] = select <2 x i1> [[TMP3]], <2 x i32> [[TMP19]], <2 x i32> [[TMP36]]
 ; CHECK-NEXT:    [[TMP18:%.*]] = extractelement <2 x i32> [[TMP14]], i32 0
 ; CHECK-NEXT:    store i32 [[TMP18]], ptr [[TMP21]], align 4, !alias.scope [[META5:![0-9]+]], !noalias [[META7:![0-9]+]]
 ; CHECK-NEXT:    [[TMP20:%.*]] = extractelement <2 x i32> [[TMP14]], i32 1
@@ -1069,18 +1069,15 @@ define void @test_three_stores_with_different_predicates(ptr %dst, ptr %src, ptr
 ; CHECK-NEXT:    store i32 1, ptr [[TMP7]], align 4, !alias.scope [[META95]], !noalias [[META92]]
 ; CHECK-NEXT:    br label %[[PRED_STORE_CONTINUE3]]
 ; CHECK:       [[PRED_STORE_CONTINUE3]]:
-; CHECK-NEXT:    [[TMP8:%.*]] = xor <2 x i1> [[TMP3]], splat (i1 true)
-; CHECK-NEXT:    [[TMP9:%.*]] = or <2 x i1> [[TMP3]], [[TMP8]]
 ; CHECK-NEXT:    [[TMP10:%.*]] = icmp ule <2 x i32> [[WIDE_LOAD]], splat (i32 10)
-; CHECK-NEXT:    [[TMP11:%.*]] = select <2 x i1> [[TMP9]], <2 x i1> [[TMP10]], <2 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP12:%.*]] = extractelement <2 x i1> [[TMP11]], i32 0
+; CHECK-NEXT:    [[TMP12:%.*]] = extractelement <2 x i1> [[TMP10]], i32 0
 ; CHECK-NEXT:    br i1 [[TMP12]], label %[[PRED_STORE_IF4:.*]], label %[[PRED_STORE_CONTINUE5:.*]]
 ; CHECK:       [[PRED_STORE_IF4]]:
 ; CHECK-NEXT:    [[TMP13:%.*]] = getelementptr inbounds i32, ptr [[DST]], i32 [[TMP0]]
 ; CHECK-NEXT:    store i32 2, ptr [[TMP13]], align 4, !alias.scope [[META95]], !noalias [[META92]]
 ; CHECK-NEXT:    br label %[[PRED_STORE_CONTINUE5]]
 ; CHECK:       [[PRED_STORE_CONTINUE5]]:
-; CHECK-NEXT:    [[TMP14:%.*]] = extractelement <2 x i1> [[TMP11]], i32 1
+; CHECK-NEXT:    [[TMP14:%.*]] = extractelement <2 x i1> [[TMP10]], i32 1
 ; CHECK-NEXT:    br i1 [[TMP14]], label %[[PRED_STORE_IF6:.*]], label %[[PRED_STORE_CONTINUE7:.*]]
 ; CHECK:       [[PRED_STORE_IF6]]:
 ; CHECK-NEXT:    [[TMP15:%.*]] = getelementptr inbounds i32, ptr [[DST]], i32 [[TMP1]]
@@ -1088,15 +1085,14 @@ define void @test_three_stores_with_different_predicates(ptr %dst, ptr %src, ptr
 ; CHECK-NEXT:    br label %[[PRED_STORE_CONTINUE7]]
 ; CHECK:       [[PRED_STORE_CONTINUE7]]:
 ; CHECK-NEXT:    [[TMP16:%.*]] = icmp ule <2 x i32> [[WIDE_LOAD]], splat (i32 9)
-; CHECK-NEXT:    [[TMP17:%.*]] = select <2 x i1> [[TMP9]], <2 x i1> [[TMP16]], <2 x i1> zeroinitializer
-; CHECK-NEXT:    [[TMP18:%.*]] = extractelement <2 x i1> [[TMP17]], i32 0
+; CHECK-NEXT:    [[TMP18:%.*]] = extractelement <2 x i1> [[TMP16]], i32 0
 ; CHECK-NEXT:    br i1 [[TMP18]], label %[[PRED_STORE_IF8:.*]], label %[[PRED_STORE_CONTINUE9:.*]]
 ; CHECK:       [[PRED_STORE_IF8]]:
 ; CHECK-NEXT:    [[TMP19:%.*]] = getelementptr inbounds i32, ptr [[DST]], i32 [[TMP0]]
 ; CHECK-NEXT:    store i32 3, ptr [[TMP19]], align 4, !alias.scope [[META95]], !noalias [[META92]]
 ; CHECK-NEXT:    br label %[[PRED_STORE_CONTINUE9]]
 ; CHECK:       [[PRED_STORE_CONTINUE9]]:
-; CHECK-NEXT:    [[TMP20:%.*]] = extractelement <2 x i1> [[TMP17]], i32 1
+; CHECK-NEXT:    [[TMP20:%.*]] = extractelement <2 x i1> [[TMP16]], i32 1
 ; CHECK-NEXT:    br i1 [[TMP20]], label %[[PRED_STORE_IF10:.*]], label %[[PRED_STORE_CONTINUE11]]
 ; CHECK:       [[PRED_STORE_IF10]]:
 ; CHECK-NEXT:    [[TMP21:%.*]] = getelementptr inbounds i32, ptr [[DST]], i32 [[TMP1]]
