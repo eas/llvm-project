@@ -52,7 +52,11 @@ struct VPlanTransforms {
            any_of(PrintAfterVPlanPasses, [PassName](StringRef Entry) {
              return PassName.contains(Entry);
            }))) {
-        dbgs() << "VPlan after " << PassName << '\n';
+
+        dbgs()
+            << "VPlan for loop in '"
+            << Plan.getScalarHeader()->getIRBasicBlock()->getParent()->getName()
+            << "' after " << PassName << '\n';
         dbgs() << Plan << '\n';
       }
       if (VerifyEachVPlan && EnableVerify)
