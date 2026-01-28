@@ -597,6 +597,10 @@ LOOP_PASS_DEBUG_RE = re.compile(
     r"^\s*\'(?P<func>[\w.$-]+?)\'[^\n]*" r"\s*\n(?P<body>.*)$", flags=(re.X | re.S)
 )
 
+VPLAN_RE = re.compile(
+    r"\'(?P<func>[\w.$-]+?)\'[^\n]*\n(?P<body>.*)$", flags=(re.X | re.S)
+)
+
 IR_FUNCTION_RE = re.compile(r'^\s*define\s+(?:internal\s+)?[^@]*@"?([\w.$-]+)"?\s*\(')
 IR_FUNCTION_LABEL_RE = re.compile(
     r'^\s*(?:define\s+(?:internal\s+)?[^@]*)?@"?([\w.$-]+)"?\s*\('
@@ -1406,21 +1410,23 @@ def make_asm_generalizer(version):
     return GeneralizerInfo(version, GeneralizerInfo.MODE_ASM, values, prefix, suffix)
 
 
-# TODO: This is no longer required. Generalize UTC over an empty GeneralizerInfo.
 def make_analyze_generalizer(version):
     values = [
+        # Used in LoopAccessAnalysis tests:
         NamelessValue(
             r"GRP",
             "#",
-            r"",
+            r"group ",
             r"0x[0-9a-f]+",
             None,
             replace_number_with_counter=True,
         ),
+        # Used in VPlan tests:
+        NamelessValue(r"VP", "%", r"vp<%", r"[\w$.-]+?", None, ir_suffix=r">"),
     ]
 
     prefix = r"(\s*)"
-    suffix = r"(\)?:)"
+    suffix = r"([,\s\(\)\}\]:]|\Z)"
 
     return GeneralizerInfo(
         version, GeneralizerInfo.MODE_ANALYZE, values, prefix, suffix
