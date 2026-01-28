@@ -34,6 +34,7 @@ struct VFRange;
 
 LLVM_ABI_FOR_TEST extern cl::opt<bool> VerifyEachVPlan;
 LLVM_ABI_FOR_TEST extern cl::opt<bool> PrintAfterEachVPlanPass;
+LLVM_ABI_FOR_TEST extern cl::list<std::string> PrintAfterVPlanPasses;
 LLVM_ABI_FOR_TEST extern cl::opt<bool> EnableWideActiveLaneMask;
 
 struct VPlanTransforms {
@@ -46,7 +47,11 @@ struct VPlanTransforms {
     auto PostTransformActions = [&]() {
       // Make sure to print before verification, so that output is more useful
       // in case of failures:
-      if (PrintAfterEachVPlanPass) {
+      if (PrintAfterEachVPlanPass ||
+          (PrintAfterVPlanPasses.getNumOccurrences() > 0 &&
+           any_of(PrintAfterVPlanPasses, [PassName](StringRef Entry) {
+             return PassName.contains(Entry);
+           }))) {
         dbgs() << "VPlan after " << PassName << '\n';
         dbgs() << Plan << '\n';
       }

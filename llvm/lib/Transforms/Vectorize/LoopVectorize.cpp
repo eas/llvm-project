@@ -370,6 +370,11 @@ cl::opt<bool> llvm::PrintAfterEachVPlanPass(
     "vplan-print-after-all", cl::init(false), cl::Hidden,
     cl::desc("Print after each VPlanTransforms::runPass."));
 
+cl::list<std::string> llvm::PrintAfterVPlanPasses(
+    "vplan-print-after", cl::Hidden,
+    cl::desc("Print after specified VPlan transformations (substring match "
+             "suffices)."));
+
 // This flag enables the stress testing of the VPlan H-CFG construction in the
 // VPlan-native vectorization path. It must be used in conjuction with
 // -enable-vplan-native-path. -vplan-verify-hcfg can also be used to enable the
