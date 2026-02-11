@@ -1083,6 +1083,19 @@ inline auto m_VPPhi(const Op0_t &Op0, const Op1_t &Op1) {
                       /*Commutative*/ false, VPInstruction>({Op0, Op1});
 }
 
+// Helper to create adhoc matchers.
+template <typename LambdaTy> struct Lambda_match {
+  LambdaTy Lambda;
+
+  Lambda_match(LambdaTy &&Lambda) : Lambda(std::move(Lambda)) {}
+
+  template <typename OpTy> bool match(OpTy *V) const { return Lambda(V); }
+};
+
+template <typename LambdaTy>
+inline Lambda_match<LambdaTy> m_Lambda(LambdaTy &&Lambda) {
+  return std::move(Lambda);
+}
 } // namespace llvm::VPlanPatternMatch
 
 #endif
