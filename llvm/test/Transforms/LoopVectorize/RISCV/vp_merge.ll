@@ -16,9 +16,8 @@ define i32 @f(ptr noalias %p, i64 %n) {
 ; CHECK-NEXT:    [[VP_OP_LOAD:%.*]] = call <vscale x 4 x i32> @llvm.vp.load.nxv4i32.p0(ptr align 4 [[TMP1]], <vscale x 4 x i1> splat (i1 true), i32 [[TMP0]])
 ; CHECK-NEXT:    [[TMP2:%.*]] = icmp uge <vscale x 4 x i32> [[VP_OP_LOAD]], splat (i32 12)
 ; CHECK-NEXT:    [[TMP3:%.*]] = icmp ult <vscale x 4 x i32> [[VP_OP_LOAD]], splat (i32 15)
-; CHECK-NEXT:    [[TMP4:%.*]] = or <vscale x 4 x i1> [[VEC_PHI]], [[TMP3]]
-; CHECK-NEXT:    [[PREDPHI:%.*]] = select <vscale x 4 x i1> [[TMP2]], <vscale x 4 x i1> [[TMP4]], <vscale x 4 x i1> [[VEC_PHI]]
-; CHECK-NEXT:    [[TMP5]] = call <vscale x 4 x i1> @llvm.vp.merge.nxv4i1(<vscale x 4 x i1> splat (i1 true), <vscale x 4 x i1> [[PREDPHI]], <vscale x 4 x i1> [[VEC_PHI]], i32 [[TMP0]])
+; CHECK-NEXT:    [[TMP4:%.*]] = select <vscale x 4 x i1> [[TMP2]], <vscale x 4 x i1> [[TMP3]], <vscale x 4 x i1> zeroinitializer
+; CHECK-NEXT:    [[TMP5]] = call <vscale x 4 x i1> @llvm.vp.merge.nxv4i1(<vscale x 4 x i1> [[TMP4]], <vscale x 4 x i1> splat (i1 true), <vscale x 4 x i1> [[VEC_PHI]], i32 [[TMP0]])
 ; CHECK-NEXT:    [[TMP6:%.*]] = zext i32 [[TMP0]] to i64
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add i64 [[TMP6]], [[CURRENT_ITERATION_IV]]
 ; CHECK-NEXT:    [[AVL_NEXT]] = sub nuw i64 [[AVL]], [[TMP6]]
@@ -76,9 +75,8 @@ define i32 @pred_select_const_i32_from_icmp(ptr noalias nocapture readonly %src1
 ; CHECK-NEXT:    [[TMP3:%.*]] = getelementptr i32, ptr [[SRC2]], i64 [[CURRENT_ITERATION_IV]]
 ; CHECK-NEXT:    [[VP_OP_LOAD1:%.*]] = call <vscale x 4 x i32> @llvm.vp.load.nxv4i32.p0(ptr align 4 [[TMP3]], <vscale x 4 x i1> [[TMP2]], i32 [[TMP0]])
 ; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq <vscale x 4 x i32> [[VP_OP_LOAD1]], splat (i32 2)
-; CHECK-NEXT:    [[TMP5:%.*]] = or <vscale x 4 x i1> [[VEC_PHI]], [[TMP4]]
-; CHECK-NEXT:    [[PREDPHI:%.*]] = select <vscale x 4 x i1> [[TMP2]], <vscale x 4 x i1> [[TMP5]], <vscale x 4 x i1> [[VEC_PHI]]
-; CHECK-NEXT:    [[TMP6]] = call <vscale x 4 x i1> @llvm.vp.merge.nxv4i1(<vscale x 4 x i1> splat (i1 true), <vscale x 4 x i1> [[PREDPHI]], <vscale x 4 x i1> [[VEC_PHI]], i32 [[TMP0]])
+; CHECK-NEXT:    [[TMP5:%.*]] = select <vscale x 4 x i1> [[TMP2]], <vscale x 4 x i1> [[TMP4]], <vscale x 4 x i1> zeroinitializer
+; CHECK-NEXT:    [[TMP6]] = call <vscale x 4 x i1> @llvm.vp.merge.nxv4i1(<vscale x 4 x i1> [[TMP5]], <vscale x 4 x i1> splat (i1 true), <vscale x 4 x i1> [[VEC_PHI]], i32 [[TMP0]])
 ; CHECK-NEXT:    [[TMP7:%.*]] = zext i32 [[TMP0]] to i64
 ; CHECK-NEXT:    [[CURRENT_ITERATION_NEXT]] = add i64 [[TMP7]], [[CURRENT_ITERATION_IV]]
 ; CHECK-NEXT:    [[AVL_NEXT]] = sub nuw i64 [[AVL]], [[TMP7]]

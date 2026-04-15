@@ -3139,11 +3139,39 @@ static VPRecipeBase *optimizeMaskToEVL(VPValue *HeaderMask,
       return new VPInterleaveEVLRecipe(*Interleave, EVL, Mask);
 
   VPValue *LHS, *RHS;
+
+  auto m_SelectOrSelectLikeBlend = [](const auto &Cond, const auto &TrueVal,
+                                      const auto &FalseVal) {
+    return m_Lambda([&](auto *V) {
+      if (match(V, m_Select(Cond, TrueVal, FalseVal)))
+        return true;
+
+      auto *Blend = dyn_cast<VPBlendRecipe>(V);
+      if (!Blend || Blend->getNumOperands() != 3)
+        return false;
+      return (match(Blend->getIncomingValue(0), FalseVal) &&
+              match(Blend->getIncomingValue(1), TrueVal) &&
+              match(Blend->getMask(1), Cond));
+    });
+  };
   if (match(&CurRecipe,
-            m_Select(m_Specific(HeaderMask), m_VPValue(LHS), m_VPValue(RHS))))
+            m_Select(m_Specific(HeaderMask), m_VPValue(LHS), m_VPValue(RHS)))) {
+    VPValue *SelCond, *OrVal;
+    if (match(LHS, m_SelectOrSelectLikeBlend(
+                       m_VPValue(SelCond),
+                       m_c_BinaryOr(m_VPValue(OrVal), m_Specific(RHS)),
+                       m_Specific(RHS)))) {
+      auto *NewSelect = new VPInstruction(Instruction::Select,
+                                          {SelCond, OrVal, Plan->getFalse()});
+      NewSelect->insertBefore(cast<VPSingleDefRecipe>(LHS));
+      return new VPWidenIntrinsicRecipe(
+          Intrinsic::vp_merge, {NewSelect, Plan->getTrue(), RHS, &EVL},
+          TypeInfo.inferScalarType(LHS), {}, {}, DL);
+    }
     return new VPWidenIntrinsicRecipe(
         Intrinsic::vp_merge, {Plan->getTrue(), LHS, RHS, &EVL},
         TypeInfo.inferScalarType(LHS), {}, {}, DL);
+  }
 
   if (match(&CurRecipe, m_Select(m_RemoveMask(HeaderMask, Mask), m_VPValue(LHS),
                                  m_VPValue(RHS))))
