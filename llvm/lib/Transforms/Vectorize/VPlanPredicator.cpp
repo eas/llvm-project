@@ -28,6 +28,8 @@ class VPPredicator {
   /// Builder to construct recipes to compute masks.
   VPBuilder Builder;
 
+  VPlan &Plan;
+
   /// Dominator tree for the VPlan.
   VPDominatorTree VPDT;
 
@@ -70,7 +72,7 @@ class VPPredicator {
   }
 
 public:
-  VPPredicator(VPlan &Plan) : VPDT(Plan), VPPDT(Plan) {}
+  VPPredicator(VPlan &Plan) : Plan(Plan), VPDT(Plan), VPPDT(Plan) {}
 
   /// Returns the *entry* mask for \p VPBB.
   VPValue *getBlockInMask(const VPBasicBlock *VPBB) const {
@@ -223,8 +225,37 @@ void VPPredicator::createSwitchEdgeMasks(const VPInstruction *SI) {
   }
   setEdgeMask(Src, DefaultDst, DefaultMask);
 }
+namespace {
+template <typename Op0_t, typename Op1_t> struct RemoveMask_match {
+  Op0_t In;
+  Op1_t &Out;
+
+  RemoveMask_match(const Op0_t &In, Op1_t &Out) : In(In), Out(Out) {}
+
+  template <typename OpTy> bool match(OpTy *V) const {
+    if (m_Specific(In).match(V)) {
+      Out = nullptr;
+      return true;
+    }
+    return m_LogicalAnd(m_Specific(In), m_VPValue(Out)).match(V);
+  }
+};
+
+/// Match a specific mask \p In, or a combination of it (logical-and In, Out).
+/// Returns the remaining part \p Out if so, or nullptr otherwise.
+template <typename Op0_t, typename Op1_t>
+static inline RemoveMask_match<Op0_t, Op1_t> m_RemoveMask(const Op0_t &In,
+                                                          Op1_t &Out) {
+  return RemoveMask_match<Op0_t, Op1_t>(In, Out);
+}
+} // namespace
+
+static cl::opt<bool> SimplifyBlendMasks("simplify-blend-masks", cl::init(true));
 
 void VPPredicator::convertPhisToBlends(VPBasicBlock *VPBB) {
+  VPRegionBlock *LoopRegion = Plan.getVectorLoopRegion();
+  VPBasicBlock *Header = LoopRegion->getEntryBasicBlock();
+
   SmallVector<VPPhi *> Phis;
   for (VPRecipeBase &R : VPBB->phis())
     Phis.push_back(cast<VPPhi>(&R));
@@ -246,13 +277,37 @@ void VPPredicator::convertPhisToBlends(VPBasicBlock *VPBB) {
     }
 
     SmallVector<VPValue *, 2> OperandsWithMask;
+    SmallVector<VPValue *, 2> OperandsWithSimplifiedMasks;
+    VPBlockBase *CommonDom = VPDT.findNearestCommonDominator(
+        map_range(PhiR->incoming_blocks(), [](const VPBasicBlock *BB) {
+          return const_cast<VPBasicBlock *>(BB);
+        }));
+    VPValue *CommonMask = BlockMaskCache[cast<VPBasicBlock>(CommonDom)];
     for (const auto &[InVPV, InVPBB] : PhiR->incoming_values_and_blocks()) {
       OperandsWithMask.push_back(InVPV);
-      OperandsWithMask.push_back(createEdgeMask(InVPBB, VPBB));
+      auto *Mask = createEdgeMask(InVPBB, VPBB);
+      VPValue *SimplerMask = nullptr;
+      OperandsWithMask.push_back(Mask);
+      if (SimplifyBlendMasks &&
+          // If we couldn't simplify earlier mask avoid extra work:
+          OperandsWithMask.size() == OperandsWithSimplifiedMasks.size() + 2 &&
+          // FIXME: foldTailByMasking() uses poison instead of the correct value
+          // from a recurrence phi for phis it creates in the vector.latch.
+          !(InVPV->getDefiningRecipe() && InVPV->getDefiningRecipe()->getParent() == Header) &&
+          match(Mask, m_RemoveMask(CommonMask, SimplerMask))) {
+        OperandsWithSimplifiedMasks.push_back(InVPV);
+        OperandsWithSimplifiedMasks.push_back(SimplerMask);
+      }
     }
+    bool UseSimplifiedMasks =
+        SimplifyBlendMasks &&
+        OperandsWithMask.size() == OperandsWithSimplifiedMasks.size();
+    assert(!UseSimplifiedMasks);
     PHINode *IRPhi = cast_or_null<PHINode>(PhiR->getUnderlyingValue());
-    auto *Blend =
-        new VPBlendRecipe(IRPhi, OperandsWithMask, *PhiR, PhiR->getDebugLoc());
+    auto *Blend = new VPBlendRecipe(
+        IRPhi,
+        UseSimplifiedMasks ? OperandsWithSimplifiedMasks : OperandsWithMask,
+        *PhiR, PhiR->getDebugLoc());
     Builder.insert(Blend);
     PhiR->replaceAllUsesWith(Blend);
     PhiR->eraseFromParent();

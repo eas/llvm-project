@@ -89,7 +89,7 @@ define void @mask_reuse(ptr %a) {
 ; CHECK-NEXT:    bb3:
 ; CHECK-NEXT:      EMIT vp<[[VP5:%[0-9]+]]> = not ir<%c1>
 ; CHECK-NEXT:      EMIT vp<[[VP6:%[0-9]+]]> = logical-and ir<%c0>, vp<[[VP5]]>
-; CHECK-NEXT:      BLEND ir<%phi3> = ir<%add2>/vp<[[VP4]]> ir<%add1>/vp<[[VP6]]>
+; CHECK-NEXT:      BLEND ir<%phi3> = ir<%add2>/ir<%c1> ir<%add1>/vp<[[VP5]]>
 ; CHECK-NEXT:      EMIT ir<%add3> = add ir<%iv>, ir<3>, ir<%c0>
 ; CHECK-NEXT:    Successor(s): bb4
 ; CHECK-EMPTY:
