@@ -92,6 +92,12 @@ public:
   /// as last operand. Range.End may be decreased to ensure same recipe behavior
   /// from \p Range.Start to \p Range.End.
   VPReplicateRecipe *handleReplication(VPInstruction *VPI, VFRange &Range);
+
+  /// Try to create a strided load recipe for \p VPI if it represents a strided
+  /// load access. Returns true if the VPI was replaced with a strided load.
+  bool tryToCreateStridedLoad(VPInstruction *VPI, VFRange &Range,
+                               PredicatedScalarEvolution &PSE, Loop &L,
+                               VPCostContext &Ctx);
 };
 } // end namespace llvm
 

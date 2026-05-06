@@ -3083,7 +3083,8 @@ static void fixupVFUsersForEVL(VPlan &Plan, VPValue &EVL) {
                 }) &&
          "User of VF that we can't transform to EVL.");
   Plan.getVF().replaceUsesWithIf(&EVL, [](VPUser &U, unsigned Idx) {
-    return isa<VPWidenIntOrFpInductionRecipe, VPScalarIVStepsRecipe>(U);
+    return isa<VPWidenIntOrFpInductionRecipe, VPScalarIVStepsRecipe,
+               VPWidenMemIntrinsicRecipe>(U);
   });
 
   assert(all_of(Plan.getVFxUF().users(),
@@ -6477,7 +6478,8 @@ void VPlanTransforms::createPartialReductions(VPlan &Plan,
 }
 
 void VPlanTransforms::makeMemOpWideningDecisions(
-    VPlan &Plan, VFRange &Range, VPRecipeBuilder &RecipeBuilder) {
+    VPlan &Plan, VFRange &Range, VPRecipeBuilder &RecipeBuilder,
+    PredicatedScalarEvolution &PSE, Loop &L, VPCostContext &Ctx) {
   // Collect all loads/stores first. We will start with ones having simpler
   // decisions followed by more complex ones that are potentially
   // guided/dependent on the simpler ones.
@@ -6559,6 +6561,17 @@ void VPlanTransforms::makeMemOpWideningDecisions(
         return false;
       });
 
+  // Try to convert eligible loads to strided accesses before delegating to
+  // the legacy cost model, which might scalarize them.
+  VPlanTransforms::runPass(
+      "convertToStridedAccesses", ProcessSubset, Plan, [&](VPInstruction *VPI) {
+        if (VPI->getOpcode() != Instruction::Load)
+          return false;
+
+        // tryToCreateStridedLoad returns true if it replaced VPI
+        return RecipeBuilder.tryToCreateStridedLoad(VPI, Range, PSE, L, Ctx);
+      });
+
   VPlanTransforms::runPass("delegateMemOpWideningToLegacyCM", ProcessSubset,
                            Plan, [&](VPInstruction *VPI) {
                              if (VPRecipeBase *Recipe =
@@ -6612,113 +6625,5 @@ void VPlanTransforms::makeScalarizationDecisions(VPlan &Plan, VFRange &Range) {
       VPI->replaceAllUsesWith(Recipe);
       VPI->eraseFromParent();
     }
-  }
-}
-
-void VPlanTransforms::convertToStridedAccesses(VPlan &Plan,
-                                               PredicatedScalarEvolution &PSE,
-                                               Loop &L, VPCostContext &Ctx,
-                                               VFRange &Range) {
-  if (Plan.hasScalarVFOnly())
-    return;
-
-  VPTypeAnalysis TypeInfo(Plan);
-  VPRegionBlock *VectorLoop = Plan.getVectorLoopRegion();
-  SmallVector<VPWidenMemoryRecipe *> ToErase;
-  VPValue *I32VF = nullptr;
-  for (VPBasicBlock *VPBB : VPBlockUtils::blocksOnly<VPBasicBlock>(
-           vp_depth_first_shallow(VectorLoop->getEntry()))) {
-    for (VPRecipeBase &R : make_early_inc_range(*VPBB)) {
-      auto *LoadR = dyn_cast<VPWidenLoadRecipe>(&R);
-      // TODO: Support strided store.
-      // TODO: Transform reverse access into strided access with -1 stride.
-      // TODO: Transform gather/scatter with uniform address into strided access
-      // with 0 stride.
-      // TODO: Transform interleave access into multiple strided accesses.
-      if (!LoadR || LoadR->isConsecutive())
-        continue;
-
-      auto *Ptr = dyn_cast<VPWidenGEPRecipe>(LoadR->getAddr());
-      if (!Ptr)
-        continue;
-
-      // Check if this is a strided access by analyzing the address SCEV for an
-      // affine add recurrence pattern.
-      const SCEV *PtrSCEV = vputils::getSCEVExprForVPValue(Ptr, PSE, &L);
-      const SCEV *Start;
-      const APInt *Step;
-      // TODO: Support non-constant loop invariant stride.
-      if (!match(PtrSCEV, m_scev_AffineAddRec(m_SCEV(Start), m_scev_APInt(Step),
-                                              m_SpecificLoop(&L))))
-        continue;
-
-      // TODO: Support the base pointer that requires SCEV expander.
-      if (!isa<SCEVUnknown, SCEVConstant>(Start))
-        continue;
-
-      Type *LoadTy = TypeInfo.inferScalarType(LoadR);
-      Align Alignment = LoadR->getAlign();
-      auto IsProfitable = [&](ElementCount VF) {
-        Type *DataTy = toVectorTy(LoadTy, VF);
-        if (!Ctx.TTI.isLegalStridedLoadStore(DataTy, Alignment))
-          return false;
-        const InstructionCost CurrentCost = LoadR->computeCost(VF, Ctx);
-        const InstructionCost StridedLoadStoreCost =
-            VPWidenMemIntrinsicRecipe::computeMemIntrinsicCost(
-                Intrinsic::experimental_vp_strided_load, DataTy,
-                LoadR->isMasked(), Alignment, Ctx);
-        return StridedLoadStoreCost < CurrentCost;
-      };
-
-      if (!LoopVectorizationPlanner::getDecisionAndClampRange(IsProfitable,
-                                                              Range))
-        continue;
-
-      // Get VF as i32 for the vector length operand.
-      if (!I32VF) {
-        VPBuilder Builder(Plan.getVectorPreheader());
-        I32VF = Builder.createScalarZExtOrTrunc(
-            &Plan.getVF(), Type::getInt32Ty(Plan.getContext()),
-            TypeInfo.inferScalarType(&Plan.getVF()), DebugLoc::getUnknown());
-      }
-
-      VPBuilder Builder(LoadR);
-      // Create the base pointer of strided access.
-      VPValue *StartVPV = vputils::getOrCreateVPValueForSCEVExpr(Plan, Start);
-      VPValue *StrideInBytes =
-          Plan.getConstantInt(VectorLoop->getCanonicalIVType(),
-                              Step->getSExtValue(), /*IsSigned=*/true);
-      auto *AddRecPtr = cast<SCEVAddRecExpr>(PtrSCEV);
-      auto *Offset = Builder.createOverflowingOp(
-          Instruction::Mul, {VectorLoop->getCanonicalIV(), StrideInBytes},
-          {AddRecPtr->hasNoUnsignedWrap(), AddRecPtr->hasNoSignedWrap()});
-      auto *BasePtr = Builder.createNoWrapPtrAdd(
-          StartVPV, Offset,
-          AddRecPtr->hasNoUnsignedWrap() ? GEPNoWrapFlags::noUnsignedWrap()
-                                         : GEPNoWrapFlags::none());
-
-      // Create a new vector pointer for strided access.
-      VPValue *NewPtr = Builder.createVectorPointer(
-          BasePtr, Type::getInt8Ty(Plan.getContext()), StrideInBytes,
-          Ptr->getGEPNoWrapFlags(), Ptr->getDebugLoc());
-
-      VPValue *Mask = LoadR->getMask();
-      if (!Mask)
-        Mask = Plan.getTrue();
-      auto *StridedLoad = Builder.createWidenMemIntrinsic(
-          Intrinsic::experimental_vp_strided_load,
-          {NewPtr, StrideInBytes, Mask, I32VF}, LoadTy, Alignment, *LoadR,
-          LoadR->getDebugLoc());
-      LoadR->replaceAllUsesWith(StridedLoad);
-
-      ToErase.push_back(LoadR);
-    }
-  }
-
-  // Clean up dead recipes.
-  for (auto *R : ToErase) {
-    VPValue *Addr = R->getAddr();
-    R->eraseFromParent();
-    recursivelyDeleteDeadRecipes(Addr);
   }
 }

@@ -14,6 +14,7 @@
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::createInLoopReductionRecipes
 ; CHECK: VPlan for loop in 'foo' after lowerMemoryIdioms
 ; CHECK: VPlan for loop in 'foo' after scalarizeMemOpsWithIrregularTypes
+; CHECK: VPlan for loop in 'foo' after convertToStridedAccesses
 ; CHECK: VPlan for loop in 'foo' after delegateMemOpWideningToLegacyCM
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::makeMemOpWideningDecisions
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::makeScalarizationDecisions
@@ -28,7 +29,6 @@
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::createPartialReductions
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::convertToAbstractRecipes
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::createInterleaveGroups
-; CHECK: VPlan for loop in 'foo' after VPlanTransforms::convertToStridedAccesses
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::replaceSymbolicStrides
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::dropPoisonGeneratingRecipes
 ; CHECK: VPlan for loop in 'foo' after VPlanTransforms::hoistPredicatedLoads

@@ -6453,6 +6453,103 @@ VPRecipeBase *VPRecipeBuilder::tryToWidenMemory(VPInstruction *VPI,
                                 Store->getDebugLoc());
 }
 
+bool VPRecipeBuilder::tryToCreateStridedLoad(VPInstruction *VPI, VFRange &Range,
+                                             PredicatedScalarEvolution &PSE,
+                                             Loop &L, VPCostContext &Ctx) {
+  assert(VPI->getOpcode() == Instruction::Load && "Must be a load instruction");
+
+  auto *Load = cast<LoadInst>(VPI->getUnderlyingInstr());
+
+  // Skip if this load will be handled by interleave groups.
+  // Use getDecisionAndClampRange to check if any VF in the range uses CM_Interleave.
+  if (LoopVectorizationPlanner::getDecisionAndClampRange(
+          [&](ElementCount VF) {
+            return VF.isVector() &&
+                   CM.getWideningDecision(Load, VF) ==
+                       LoopVectorizationCostModel::CM_Interleave;
+          },
+          Range))
+    return false;
+
+  // Get the pointer operand
+  VPValue *PtrOp = VPI->getOperand(0);
+
+  // Check if this is a strided access by analyzing the address SCEV
+  const SCEV *PtrSCEV = vputils::getSCEVExprForVPValue(PtrOp, PSE, &L);
+  if (!PtrSCEV)
+    return false;
+
+  const SCEV *Start;
+  const APInt *Step;
+  // TODO: Support non-constant loop invariant stride.
+  if (!match(PtrSCEV, m_scev_AffineAddRec(m_SCEV(Start), m_scev_APInt(Step),
+                                          m_SpecificLoop(&L))))
+    return false;
+
+  // TODO: Support the base pointer that requires SCEV expander.
+  if (!isa<SCEVUnknown, SCEVConstant>(Start))
+    return false;
+
+  Type *LoadTy = Load->getType();
+  Align Alignment = Load->getAlign();
+
+  // Skip unit-strided accesses (stride == element size).
+  // These should be handled as consecutive accesses (CM_Widen), not strided loads.
+  const DataLayout &DL = Load->getDataLayout();
+  unsigned ElementSize = DL.getTypeStoreSize(LoadTy);
+  if (Step->getZExtValue() == ElementSize)
+    return false;
+
+  // Check if strided load is legal for any VF in the range
+  auto IsLegal = [&](ElementCount VF) {
+    Type *DataTy = toVectorTy(LoadTy, VF);
+    return Ctx.TTI.isLegalStridedLoadStore(DataTy, Alignment);
+  };
+
+  if (!LoopVectorizationPlanner::getDecisionAndClampRange(IsLegal, Range))
+    return false;
+
+  VPRegionBlock *VectorLoop = Plan.getVectorLoopRegion();
+
+  VPValue *StrideInBytes =
+      Plan.getConstantInt(VectorLoop->getCanonicalIVType(),
+                          Step->getSExtValue(), /*IsSigned=*/true);
+  auto *AddRecPtr = cast<SCEVAddRecExpr>(PtrSCEV);
+
+  GEPNoWrapFlags PtrAddFlags = AddRecPtr->hasNoUnsignedWrap()
+                                   ? GEPNoWrapFlags::noUnsignedWrap()
+                                   : GEPNoWrapFlags::none();
+  auto *VecPtr = new VPVectorPointerRecipe(
+      PtrOp, Type::getInt8Ty(Load->getContext()), StrideInBytes, PtrAddFlags,
+      Load->getDebugLoc());
+  VecPtr->insertBefore(VPI);
+
+  // Create strided load as VPWidenMemIntrinsicRecipe directly
+  // Use the mask from the VPInstruction if it has one, otherwise use all-true
+  VPValue *Mask = VPI->getMask();
+  if (!Mask)
+    Mask = Plan.getTrue();
+
+  // Create VF as i32 for the vector length operand
+  // This will be replaced with EVL during fixupVFUsersForEVL if EVL optimization runs
+  VPValue *VFAsI32 = VPBuilder(VPI).createScalarZExtOrTrunc(
+      &Plan.getVF(), Type::getInt32Ty(Plan.getContext()),
+      Type::getInt64Ty(Plan.getContext()), Load->getDebugLoc());
+
+  auto *StridedLoad = new VPWidenMemIntrinsicRecipe(
+      Intrinsic::experimental_vp_strided_load,
+      {VecPtr, StrideInBytes, Mask, VFAsI32}, LoadTy, Alignment, {},
+      Load->getDebugLoc());
+
+  // Insert the new recipe before the VPInstruction
+  StridedLoad->insertBefore(VPI);
+
+  VPI->replaceAllUsesWith(StridedLoad);
+  VPI->eraseFromParent();
+
+  return true;
+}
+
 VPWidenIntOrFpInductionRecipe *
 VPRecipeBuilder::tryToOptimizeInductionTruncate(VPInstruction *VPI,
                                                 VFRange &Range) {
@@ -6984,7 +7081,7 @@ LoopVectorizationPlanner::tryToBuildVPlanWithVPRecipes(VPlanPtr Plan,
                         OrigLoop);
 
   RUN_VPLAN_PASS(VPlanTransforms::makeMemOpWideningDecisions, *Plan, Range,
-                 RecipeBuilder);
+                 RecipeBuilder, CM.PSE, *OrigLoop, CostCtx);
 
   RUN_VPLAN_PASS(VPlanTransforms::makeScalarizationDecisions, *Plan, Range);
 
@@ -6998,7 +7095,7 @@ LoopVectorizationPlanner::tryToBuildVPlanWithVPRecipes(VPlanPtr Plan,
       if (isa<VPWidenCanonicalIVRecipe, VPBlendRecipe, VPReductionRecipe,
               VPReplicateRecipe, VPWidenLoadRecipe, VPWidenStoreRecipe,
               VPVectorPointerRecipe, VPVectorEndPointerRecipe,
-              VPHistogramRecipe>(&R))
+              VPHistogramRecipe, VPWidenMemIntrinsicRecipe>(&R))
         continue;
       auto *VPI = cast<VPInstruction>(&R);
       if (!VPI->getUnderlyingValue())
@@ -7087,11 +7184,6 @@ LoopVectorizationPlanner::tryToBuildVPlanWithVPRecipes(VPlanPtr Plan,
   // single VPInterleaveRecipe at its insertion point.
   RUN_VPLAN_PASS(VPlanTransforms::createInterleaveGroups, *Plan,
                  InterleaveGroups, CM.isEpilogueAllowed());
-
-  // Convert memory recipes to strided access recipes if the strided access is
-  // legal and profitable.
-  RUN_VPLAN_PASS(VPlanTransforms::convertToStridedAccesses, *Plan, PSE,
-                 *OrigLoop, CostCtx, Range);
 
   // Ensure scalar VF plans only contain VF=1, as required by hasScalarVFOnly.
   if (Range.Start.isScalar())

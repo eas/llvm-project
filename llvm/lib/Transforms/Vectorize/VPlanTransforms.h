@@ -327,13 +327,6 @@ struct VPlanTransforms {
           &InterleaveGroups,
       const bool &EpilogueAllowed);
 
-  /// Transform widen memory recipes into strided access recipes when legal
-  /// and profitable. Clamps \p Range to maintain consistency with widen
-  /// decisions of \p Plan, and uses \p Ctx to evaluate the cost.
-  static void convertToStridedAccesses(VPlan &Plan,
-                                       PredicatedScalarEvolution &PSE, Loop &L,
-                                       VPCostContext &Ctx, VFRange &Range);
-
   /// Remove dead recipes from \p Plan.
   static void removeDeadRecipes(VPlan &Plan);
 
@@ -545,7 +538,9 @@ struct VPlanTransforms {
   /// Convert load/store VPInstructions in \p Plan into widened or replicate
   /// recipes. Non load/store input instructions are left unchanged.
   static void makeMemOpWideningDecisions(VPlan &Plan, VFRange &Range,
-                                         VPRecipeBuilder &RecipeBuilder);
+                                         VPRecipeBuilder &RecipeBuilder,
+                                         PredicatedScalarEvolution &PSE,
+                                         Loop &L, VPCostContext &Ctx);
 
   /// Make VPlan-based scalarization decision prior to delegating to the ones
   /// made by the legacy CM. Only transforms "usesFirstLaneOnly` def-use chains
