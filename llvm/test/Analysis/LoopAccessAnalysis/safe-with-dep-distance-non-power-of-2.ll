@@ -259,14 +259,13 @@ exit:
   ret void
 }
 
-; FIXME: "maximum safe store-load forward width of 32 bits" for i32 access means
-; there is no safe VF, need to be reported properly.
 define void @two_store_load_forward_deps(ptr %A, ptr %B) {
 ; CHECK-LABEL: 'two_store_load_forward_deps'
 ; CHECK-NEXT:    loop:
-; CHECK-NEXT:      Memory dependences are safe with a maximum safe vector width of 96 bits, with a maximum safe store-load forward width of 32 bits with run-time checks
+; CHECK-NEXT:      Report: unsafe dependent memory operations in loop. Use #pragma clang loop distribute(enable) to allow loop distribution to attempt to isolate the offending operations into a separate loop
+; CHECK-NEXT:  Backward loop carried data dependence that prevents store-to-load forwarding.
 ; CHECK-NEXT:      Dependences:
-; CHECK-NEXT:        BackwardVectorizable:
+; CHECK-NEXT:        BackwardVectorizableButPreventsForwarding:
 ; CHECK-NEXT:            %vb = load i32, ptr %b.ld, align 4 ->
 ; CHECK-NEXT:            store i32 %vb, ptr %b.st, align 4
 ; CHECK-EMPTY:
@@ -321,14 +320,13 @@ exit:
   ret void
 }
 
-; FIXME: "with a maximum safe store-load forward width of 0 bits" shouldn't
-; result in "Memory dependences are safe".
 define void @stride_3_store_load_forward_dep(ptr %A) {
 ; CHECK-LABEL: 'stride_3_store_load_forward_dep'
 ; CHECK-NEXT:    loop:
-; CHECK-NEXT:      Memory dependences are safe with a maximum safe vector width of 64 bits, with a maximum safe store-load forward width of 0 bits
+; CHECK-NEXT:      Report: unsafe dependent memory operations in loop. Use #pragma clang loop distribute(enable) to allow loop distribution to attempt to isolate the offending operations into a separate loop
+; CHECK-NEXT:  Backward loop carried data dependence that prevents store-to-load forwarding.
 ; CHECK-NEXT:      Dependences:
-; CHECK-NEXT:        BackwardVectorizable:
+; CHECK-NEXT:        BackwardVectorizableButPreventsForwarding:
 ; CHECK-NEXT:            %va = load i32, ptr %a.ld, align 4 ->
 ; CHECK-NEXT:            store i32 %va, ptr %a.st, align 4
 ; CHECK-EMPTY:
