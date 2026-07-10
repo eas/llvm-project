@@ -259,14 +259,13 @@ exit:
   ret void
 }
 
-; FIXME: "maximum safe store-load forward width of 32 bits" for i32 access means
-; there is no safe VF, need to be reported properly.
 define void @two_store_load_forward_deps(ptr %A, ptr %B) {
 ; CHECK-LABEL: 'two_store_load_forward_deps'
 ; CHECK-NEXT:    loop:
-; CHECK-NEXT:      Memory dependences are safe with a maximum safe vector width of 96 bits, with a maximum safe store-load forward width of 32 bits with run-time checks
+; CHECK-NEXT:      Report: unsafe dependent memory operations in loop. Use #pragma clang loop distribute(enable) to allow loop distribution to attempt to isolate the offending operations into a separate loop
+; CHECK-NEXT:  Backward loop carried data dependence that prevents store-to-load forwarding.
 ; CHECK-NEXT:      Dependences:
-; CHECK-NEXT:        BackwardVectorizable:
+; CHECK-NEXT:        BackwardVectorizableButPreventsForwarding:
 ; CHECK-NEXT:            %vb = load i32, ptr %b.ld, align 4 ->
 ; CHECK-NEXT:            store i32 %vb, ptr %b.st, align 4
 ; CHECK-EMPTY:
