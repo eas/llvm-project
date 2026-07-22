@@ -1934,9 +1934,12 @@ bool MemoryDepChecker::couldPreventStoreLoadForward(uint64_t Distance,
   for (uint64_t VF = 2; VF <= MaxVFWithoutSLForwardIssuesPowerOf2; VF *= 2) {
     // If the number of vector iteration between the store and the load are
     // small we could incur conflicts.
-    if (Distance % (VF * TypeByteSize) &&
-        Distance / (VF * TypeByteSize) < NumItersForStoreLoadThroughMemory) {
+    if (Distance % (VF * CommonStride) &&
+        Distance / (VF * CommonStride) < NumItersForStoreLoadThroughMemory) {
       MaxVFWithoutSLForwardIssuesPowerOf2 = (VF >> 1);
+      MaxStoreLoadForwardSafeNumElements =
+          std::min(MaxStoreLoadForwardSafeNumElements,
+                   MaxVFWithoutSLForwardIssuesPowerOf2);
       break;
     }
   }
@@ -1948,21 +1951,6 @@ bool MemoryDepChecker::couldPreventStoreLoadForward(uint64_t Distance,
     return true;
   }
 
-  if (MaxVFWithoutSLForwardIssuesPowerOf2 <
-          MaxStoreLoadForwardSafeNumElements &&
-      MaxVFWithoutSLForwardIssuesPowerOf2 != VectorizerParams::MaxVectorWidth) {
-    uint64_t MaxVF = bit_floor(MaxVFWithoutSLForwardIssuesPowerOf2 *
-                               TypeByteSize / CommonStride);
-    MaxStoreLoadForwardSafeNumElements =
-        std::min(MaxStoreLoadForwardSafeNumElements, MaxVF);
-
-    if (MaxVF == 1) {
-      LLVM_DEBUG(
-          dbgs() << "LAA: strided access with Distance " << Distance
-                 << " that could cause a store-load forwarding conflict\n");
-      return true;
-    }
-  }
   return false;
 }
 
