@@ -2011,6 +2011,7 @@ bool MemoryDepChecker::Dependence::isForward() const {
 bool MemoryDepChecker::couldPreventStoreLoadForward(uint64_t Distance,
                                                     uint64_t TypeByteSize,
                                                     unsigned CommonStride) {
+  assert(CommonStride && "Stride can't be zero!");
   // If loads occur at a distance that is not a multiple of a feasible vector
   // factor store-load forwarding does not take place.
   // Positive dependences might cause troubles because vectorizing them might
@@ -2042,8 +2043,7 @@ bool MemoryDepChecker::couldPreventStoreLoadForward(uint64_t Distance,
     return true;
   }
 
-  if (CommonStride &&
-      MaxVFWithoutSLForwardIssuesPowerOf2 <
+  if (MaxVFWithoutSLForwardIssuesPowerOf2 <
           MaxStoreLoadForwardSafeNumElements &&
       MaxVFWithoutSLForwardIssuesPowerOf2 != VectorizerParams::MaxVectorWidth) {
     uint64_t MaxVF = bit_floor(MaxVFWithoutSLForwardIssuesPowerOf2 *
@@ -2413,8 +2413,8 @@ MemoryDepChecker::isDependent(const MemAccessInfo &A, unsigned AIdx,
         return CheckCompletelyBeforeOrAfter() ? Dependence::NoDep
                                               : Dependence::Unknown;
       }
-      if (!HasSameSize ||
-          couldPreventStoreLoadForward(ConstDist, TypeByteSize)) {
+      if (!HasSameSize || couldPreventStoreLoadForward(ConstDist, TypeByteSize,
+                                                       *CommonStride)) {
         LLVM_DEBUG(
             dbgs() << "LAA: Forward but may prevent st->ld forwarding\n");
         return Dependence::ForwardButPreventsForwarding;
