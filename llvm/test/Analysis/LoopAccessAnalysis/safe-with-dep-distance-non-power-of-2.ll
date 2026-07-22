@@ -330,9 +330,10 @@ exit:
 define i32 @interleaved_store_load_forward(ptr %p, i64 %n, i32 %z) {
 ; CHECK-LABEL: 'interleaved_store_load_forward'
 ; CHECK-NEXT:    for.body:
-; CHECK-NEXT:      Memory dependences are safe
+; CHECK-NEXT:      Report: unsafe dependent memory operations in loop. Use #pragma clang loop distribute(enable) to allow loop distribution to attempt to isolate the offending operations into a separate loop
+; CHECK-NEXT:  Forward loop carried data dependence that prevents store-to-load forwarding.
 ; CHECK-NEXT:      Dependences:
-; CHECK-NEXT:        Forward:
+; CHECK-NEXT:        ForwardButPreventsForwarding:
 ; CHECK-NEXT:            store i32 %0, ptr %p_i_plus_1.y, align 4 ->
 ; CHECK-NEXT:            %1 = load i32, ptr %p_i.y, align 4
 ; CHECK-EMPTY:
@@ -375,7 +376,7 @@ for.end:
 define i32 @interleaved_store_load_forward2(ptr %p, i64 %n, i32 %z) {
 ; CHECK-LABEL: 'interleaved_store_load_forward2'
 ; CHECK-NEXT:    for.body:
-; CHECK-NEXT:      Memory dependences are safe
+; CHECK-NEXT:      Memory dependences are safe, with a maximum safe store-load forward number of elements to operate on equal to 2
 ; CHECK-NEXT:      Dependences:
 ; CHECK-NEXT:        Forward:
 ; CHECK-NEXT:            store i32 %0, ptr %p_i_plus_1.y, align 4 ->
