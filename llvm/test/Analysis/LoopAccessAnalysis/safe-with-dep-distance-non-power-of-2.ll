@@ -319,3 +319,95 @@ loop:
 exit:
   ret void
 }
+
+
+%pair.i32 = type { i32, i32 }
+
+; for (int i = 0; i < n; i++) {
+;   p[i + 1].y = p[i].x;
+;   s += p[i].y;           ; Not forwarded
+; }
+define i32 @interleaved_store_load_forward(ptr %p, i64 %n, i32 %z) {
+; CHECK-LABEL: 'interleaved_store_load_forward'
+; CHECK-NEXT:    for.body:
+; CHECK-NEXT:      Memory dependences are safe
+; CHECK-NEXT:      Dependences:
+; CHECK-NEXT:        Forward:
+; CHECK-NEXT:            store i32 %0, ptr %p_i_plus_1.y, align 4 ->
+; CHECK-NEXT:            %1 = load i32, ptr %p_i.y, align 4
+; CHECK-EMPTY:
+; CHECK-NEXT:      Run-time memory checks:
+; CHECK-NEXT:      Grouped accesses:
+; CHECK-EMPTY:
+; CHECK-NEXT:      Non vectorizable stores to invariant address were not found in loop.
+; CHECK-NEXT:      SCEV assumptions:
+; CHECK-EMPTY:
+; CHECK-NEXT:      Expressions re-written:
+;
+entry:
+  br label %for.body
+
+for.body:
+  %i = phi i64 [ %i.next, %for.body ], [ 0, %entry ]
+  %s = phi i32 [ %2, %for.body ], [ 0, %entry ]
+  %i_plus_1 = add nuw nsw i64 %i, 1
+  %p_i.x = getelementptr inbounds %pair.i32, ptr %p, i64 %i, i32 0
+  %p_i.y = getelementptr inbounds %pair.i32, ptr %p, i64 %i, i32 1
+  %p_i_plus_1.y = getelementptr inbounds %pair.i32, ptr %p, i64 %i_plus_1, i32 1
+  %0 = load i32, ptr %p_i.x, align 4
+  store i32 %0, ptr %p_i_plus_1.y, align 4
+  %1 = load i32, ptr %p_i.y, align 4
+  %2 = add nsw i32 %1, %s
+  %i.next = add nuw nsw i64 %i, 1
+  %cond = icmp slt i64 %i.next, %n
+  br i1 %cond, label %for.body, label %for.end
+
+for.end:
+  %3 = phi i32 [ %2, %for.body ]
+  ret i32 %3
+}
+
+; Similar to above, but `i + 2`.
+; for (int i = 0; i < n; i++) {
+;   p[i + 2].y = p[i].x;
+;   s += p[i].y;
+; }
+define i32 @interleaved_store_load_forward2(ptr %p, i64 %n, i32 %z) {
+; CHECK-LABEL: 'interleaved_store_load_forward2'
+; CHECK-NEXT:    for.body:
+; CHECK-NEXT:      Memory dependences are safe
+; CHECK-NEXT:      Dependences:
+; CHECK-NEXT:        Forward:
+; CHECK-NEXT:            store i32 %0, ptr %p_i_plus_1.y, align 4 ->
+; CHECK-NEXT:            %1 = load i32, ptr %p_i.y, align 4
+; CHECK-EMPTY:
+; CHECK-NEXT:      Run-time memory checks:
+; CHECK-NEXT:      Grouped accesses:
+; CHECK-EMPTY:
+; CHECK-NEXT:      Non vectorizable stores to invariant address were not found in loop.
+; CHECK-NEXT:      SCEV assumptions:
+; CHECK-EMPTY:
+; CHECK-NEXT:      Expressions re-written:
+;
+entry:
+  br label %for.body
+
+for.body:
+  %i = phi i64 [ %i.next, %for.body ], [ 0, %entry ]
+  %s = phi i32 [ %2, %for.body ], [ 0, %entry ]
+  %i_plus_2 = add nuw nsw i64 %i, 2
+  %p_i.x = getelementptr inbounds %pair.i32, ptr %p, i64 %i, i32 0
+  %p_i.y = getelementptr inbounds %pair.i32, ptr %p, i64 %i, i32 1
+  %p_i_plus_1.y = getelementptr inbounds %pair.i32, ptr %p, i64 %i_plus_2, i32 1
+  %0 = load i32, ptr %p_i.x, align 4
+  store i32 %0, ptr %p_i_plus_1.y, align 4
+  %1 = load i32, ptr %p_i.y, align 4
+  %2 = add nsw i32 %1, %s
+  %i.next = add nuw nsw i64 %i, 1
+  %cond = icmp slt i64 %i.next, %n
+  br i1 %cond, label %for.body, label %for.end
+
+for.end:
+  %3 = phi i32 [ %2, %for.body ]
+  ret i32 %3
+}
