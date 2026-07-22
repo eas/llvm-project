@@ -448,7 +448,7 @@ exit:
   ret void
 }
 
-; FIXME: VF 2 is safe for store-load forwarding:
+; VF 2 is safe for store-load forwarding:
 ;                 idx |  0 |  1 |  2 |  3 |  4 |  5 |  6 |  7 |  8 |  9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 |
 ; v/iter 0 load  lane |  0 |    |    |  1 |    |    |    |    |    |    |    |    |    |    |    |    |    |    |    |
 ; v/iter 0 store lane |    |    |    |    |    |    |  0 |    |    |  1 |    |    |    |    |    |    |    |    |    |
@@ -461,10 +461,9 @@ exit:
 define void @stride3_store_load_forwarding_safe_dist(ptr %A) {
 ; CHECK-LABEL: 'stride3_store_load_forwarding_safe_dist'
 ; CHECK-NEXT:    loop:
-; CHECK-NEXT:      Report: unsafe dependent memory operations in loop. Use #pragma clang loop distribute(enable) to allow loop distribution to attempt to isolate the offending operations into a separate loop
-; CHECK-NEXT:  Backward loop carried data dependence that prevents store-to-load forwarding.
+; CHECK-NEXT:      Memory dependences are safe with a maximum safe number of elements to operate on equal to 2, with a maximum safe store-load forward number of elements to operate on equal to 2
 ; CHECK-NEXT:      Dependences:
-; CHECK-NEXT:        BackwardVectorizableButPreventsForwarding:
+; CHECK-NEXT:        BackwardVectorizable:
 ; CHECK-NEXT:            %ld = load i32, ptr %gep.ld, align 4 ->
 ; CHECK-NEXT:            store i32 %ld, ptr %gep.st, align 4
 ; CHECK-EMPTY:

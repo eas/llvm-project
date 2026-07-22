@@ -190,12 +190,12 @@ define void @safe_load_store_distance_not_pow_of_2(i64 %N) vscale_range(2, 1024)
 ; CHECK-NEXT:    [[TMP1:%.*]] = udiv i64 [[TMP0]], 3
 ; CHECK-NEXT:    [[TMP2:%.*]] = add i64 [[UMIN]], [[TMP1]]
 ; CHECK-NEXT:    [[TMP3:%.*]] = add i64 [[TMP2]], 1
-; CHECK-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ule i64 [[TMP3]], 8
+; CHECK-NEXT:    [[MIN_ITERS_CHECK:%.*]] = icmp ule i64 [[TMP3]], 16
 ; CHECK-NEXT:    br i1 [[MIN_ITERS_CHECK]], label [[SCALAR_PH:%.*]], label [[VECTOR_PH:%.*]]
 ; CHECK:       vector.ph:
-; CHECK-NEXT:    [[N_MOD_VF:%.*]] = and i64 [[TMP3]], 7
+; CHECK-NEXT:    [[N_MOD_VF:%.*]] = and i64 [[TMP3]], 15
 ; CHECK-NEXT:    [[TMP4:%.*]] = icmp eq i64 [[N_MOD_VF]], 0
-; CHECK-NEXT:    [[TMP5:%.*]] = select i1 [[TMP4]], i64 8, i64 [[N_MOD_VF]]
+; CHECK-NEXT:    [[TMP5:%.*]] = select i1 [[TMP4]], i64 16, i64 [[N_MOD_VF]]
 ; CHECK-NEXT:    [[N_VEC:%.*]] = sub i64 [[TMP3]], [[TMP5]]
 ; CHECK-NEXT:    [[TMP6:%.*]] = mul i64 [[N_VEC]], 3
 ; CHECK-NEXT:    br label [[VECTOR_BODY:%.*]]
@@ -203,8 +203,8 @@ define void @safe_load_store_distance_not_pow_of_2(i64 %N) vscale_range(2, 1024)
 ; CHECK-NEXT:    [[INDEX:%.*]] = phi i64 [ 0, [[VECTOR_PH]] ], [ [[INDEX_NEXT:%.*]], [[VECTOR_BODY]] ]
 ; CHECK-NEXT:    [[TMP7:%.*]] = mul i64 [[INDEX]], 6
 ; CHECK-NEXT:    [[TMP10:%.*]] = getelementptr i8, ptr getelementptr inbounds nuw (i8, ptr @a, i64 192), i64 [[TMP7]]
-; CHECK-NEXT:    call void @llvm.experimental.vp.strided.store.v8i16.p0.i64(<8 x i16> zeroinitializer, ptr align 2 [[TMP10]], i64 6, <8 x i1> splat (i1 true), i32 8)
-; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 8
+; CHECK-NEXT:    call void @llvm.experimental.vp.strided.store.v16i16.p0.i64(<16 x i16> zeroinitializer, ptr align 2 [[TMP10]], i64 6, <16 x i1> splat (i1 true), i32 16)
+; CHECK-NEXT:    [[INDEX_NEXT]] = add nuw i64 [[INDEX]], 16
 ; CHECK-NEXT:    [[TMP8:%.*]] = icmp eq i64 [[INDEX_NEXT]], [[N_VEC]]
 ; CHECK-NEXT:    br i1 [[TMP8]], label [[MIDDLE_BLOCK:%.*]], label [[VECTOR_BODY]], !llvm.loop [[LOOP6:![0-9]+]]
 ; CHECK:       middle.block:

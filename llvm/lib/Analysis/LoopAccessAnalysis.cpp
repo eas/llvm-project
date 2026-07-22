@@ -2029,9 +2029,12 @@ bool MemoryDepChecker::couldPreventStoreLoadForward(uint64_t Distance,
   // Compute the smallest VF at which the store and load would be misaligned
   // and recent enough to still be in the store buffer.
   for (uint64_t VF = 2; VF <= VectorizerParams::MaxVectorWidth; VF *= 2) {
-    if (isStoreLoadForwardingConflict(Distance, VF * TypeByteSize, TypeByteSize,
-                                      VF * TypeByteSize)) {
+    if (isStoreLoadForwardingConflict(Distance, VF * CommonStride, TypeByteSize,
+                                      VF * CommonStride)) {
       MaxVFWithoutSLForwardIssuesPowerOf2 = (VF >> 1);
+      MaxStoreLoadForwardSafeNumElements =
+          std::min(MaxStoreLoadForwardSafeNumElements,
+                   MaxVFWithoutSLForwardIssuesPowerOf2);
       break;
     }
   }
@@ -2043,21 +2046,6 @@ bool MemoryDepChecker::couldPreventStoreLoadForward(uint64_t Distance,
     return true;
   }
 
-  if (MaxVFWithoutSLForwardIssuesPowerOf2 <
-          MaxStoreLoadForwardSafeNumElements &&
-      MaxVFWithoutSLForwardIssuesPowerOf2 != VectorizerParams::MaxVectorWidth) {
-    uint64_t MaxVF = bit_floor(MaxVFWithoutSLForwardIssuesPowerOf2 *
-                               TypeByteSize / CommonStride);
-    MaxStoreLoadForwardSafeNumElements =
-        std::min(MaxStoreLoadForwardSafeNumElements, MaxVF);
-
-    if (MaxVF < 2) {
-      LLVM_DEBUG(
-          dbgs() << "LAA: strided access with Distance " << Distance
-                 << " that could cause a store-load forwarding conflict\n");
-      return true;
-    }
-  }
   return false;
 }
 
