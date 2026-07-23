@@ -22,10 +22,6 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Regex.h"
 
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-#include <map>
-#endif
-
 namespace llvm {
 
 class InductionDescriptor;
@@ -62,19 +58,17 @@ struct VPlanTransforms {
   static decltype(auto) runPass(StringRef PassName, PassTy &&Pass, VPlan &Plan,
                                 ArgsTy &&...Args) {
 #if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
-    static std::map<
-        std::pair<std::string /* Function */, std::string /* Pass */>, unsigned>
+    static DenseMap<std::pair<Function *, StringRef /* Pass */>, unsigned>
         PassCounter;
-    StringRef FnName =
-        Plan.getScalarHeader()->getIRBasicBlock()->getParent()->getName();
-    unsigned Instance = ++PassCounter[{FnName.str(), PassName.str()}];
+    Function *Fn = Plan.getScalarHeader()->getIRBasicBlock()->getParent();
+    unsigned Instance = ++PassCounter[{Fn, PassName}];
 
     auto PrintPlan = [&](StringRef BeforeOrAfterStr) {
       if (VPlanPrintInstance != 0 && VPlanPrintInstance != Instance)
         return;
 
-      dbgs() << "VPlan for loop in '" << FnName << "' " << BeforeOrAfterStr
-             << " " << PassName << '\n';
+      dbgs() << "VPlan for loop in '" << Fn->getName() << "' "
+             << BeforeOrAfterStr << " " << PassName << '\n';
       if (VPlanPrintVectorRegionScope && Plan.getVectorLoopRegion())
         Plan.getVectorLoopRegion()->print(dbgs());
       else
