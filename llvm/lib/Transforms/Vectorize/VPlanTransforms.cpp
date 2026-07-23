@@ -3023,60 +3023,29 @@ struct EarlyExitInfo {
   VPIRBasicBlock *EarlyExitVPBB;
   VPValue *CondToExit;
 };
-static VPValue *repairSSAImpl(VPValue *Src, VPBasicBlock *SrcVPBB,
-                              VPValue *Other, VPBasicBlock *VPBB,
-                              VPDominatorTree &VPDT,
-                              DenseMap<VPBlockBase *, VPPhi *> &Phis) {
-
-  if (VPDT.dominates(SrcVPBB, VPBB))
-    return Src;
-  if (VPDT.dominates(VPBB, SrcVPBB))
-    return Other;
-  if (VPPhi *Phi = Phis.lookup(VPBB))
-    return Phi;
-
-  SmallVector<VPValue *> InVals;
-  for (auto *Pred : VPBB->predecessors())
-    InVals.push_back(repairSSAImpl(Src, SrcVPBB, Other,
-                                   cast<VPBasicBlock>(Pred), VPDT, Phis));
-  if (all_equal(InVals))
-    return InVals[0];
-
-  VPPhi *Phi = VPBuilder(VPBB, VPBB->getFirstNonPhi()).createScalarPhi(InVals);
-  Phis[VPBB] = Phi;
-  return Phi;
-}
-
-/// Insert phi nodes to maintain SSA starting from \p VPBB, such that the
-/// resulting value is \p \Src on all paths that go through \p SrcVPBB, and \p
-/// Other otherwise. Use if the CFG has been modified such that a def no longer
-/// dominates all its uses.
-static VPValue *repairSSA(VPValue *Src, VPBasicBlock *SrcVPBB, VPValue *Other,
-                          VPBasicBlock *VPBB, VPDominatorTree &VPDT) {
-  DenseMap<VPBlockBase *, VPPhi *> Phis;
-  return repairSSAImpl(Src, SrcVPBB, Other, VPBB, VPDT, Phis);
-}
 
 // After handling early exits, the CondToExits and live outs may no longer be in
-// SSA if their defining blocks are predicated, so insert phis to repair them.
-static void repairEarlyExitSSA(VPlan &Plan, VPDominatorTree &VPDT,
-                               ArrayRef<EarlyExitInfo> Exits,
-                               VPBasicBlock *LatchVPBB,
-                               ArrayRef<VPBasicBlock *> LiveOutVPBBs) {
-  // Repair all CondToExits. The condition is false on any path that doesn't go
-  // through the exiting block.
+// SSA if their defining blocks are predicated. Reconstruct by inserting phis.
+static void reconstructEarlyExitSSA(VPlan &Plan, VPDominatorTree &VPDT,
+                                    ArrayRef<EarlyExitInfo> Exits,
+                                    VPBasicBlock *HeaderVPBB,
+                                    VPBasicBlock *LatchVPBB,
+                                    ArrayRef<VPBasicBlock *> LiveOutVPBBs) {
+  // Reconstruct all CondToExits. The condition is false on any path that
+  // doesn't go through the exiting block.
   for (auto [EarlyExitingVPBB, _, CondToExit] : Exits) {
-    VPValue *Repaired = repairSSA(CondToExit, EarlyExitingVPBB, Plan.getFalse(),
-                                  LatchVPBB, VPDT);
+    VPValue *New = vputils::reconstructSSA(
+        {{EarlyExitingVPBB, CondToExit}, {HeaderVPBB, Plan.getFalse()}},
+        LatchVPBB);
 
-    CondToExit->replaceUsesWithIf(Repaired, [&](VPUser &U, unsigned I) {
+    CondToExit->replaceUsesWithIf(New, [&](VPUser &U, unsigned I) {
       auto &R = cast<VPRecipeBase>(U);
       return VPDT.dominates(LatchVPBB, R.getParent()) &&
-             R.getVPSingleValue() != Repaired;
+             R.getVPSingleValue() != New;
     });
   }
 
-  // Repair any live outs. The value is poison on any path that didn't pass
+  // Reconstruct any live outs. The value is poison on any path that didn't pass
   // through the def's block.
   for (VPBasicBlock *LiveOutVPBB : LiveOutVPBBs)
     for (VPRecipeBase &R : *LiveOutVPBB) {
@@ -3085,12 +3054,11 @@ static void repairEarlyExitSSA(VPlan &Plan, VPDominatorTree &VPDT,
                  m_CombineOr(m_ExtractLastPart(m_VPValue(LiveOut)),
                              m_ExtractLane(m_VPValue(), m_VPValue(LiveOut)))))
         continue;
-      VPValue *Poison =
-          Plan.getOrAddLiveIn(PoisonValue::get(LiveOut->getScalarType()));
-      VPValue *Repaired =
-          repairSSA(LiveOut, LiveOut->getDefiningRecipe()->getParent(), Poison,
-                    LatchVPBB, VPDT);
-      R.replaceUsesOfWith(LiveOut, Repaired);
+      VPValue *New = vputils::reconstructSSA(
+          {{LiveOut->getDefiningRecipe()->getParent(), LiveOut},
+           {HeaderVPBB, Plan.getPoison(LiveOut->getScalarType())}},
+          LatchVPBB);
+      R.replaceUsesOfWith(LiveOut, New);
     }
 }
 
@@ -3507,7 +3475,8 @@ bool VPlanTransforms::handleUncountableEarlyExits(
   VPDT.recalculate(Plan);
   SmallVector<VPBasicBlock *> LiveOutVPBBs = {MiddleVPBB};
   append_range(LiveOutVPBBs, VectorEarlyExitVPBBs);
-  repairEarlyExitSSA(Plan, VPDT, Exits, LatchVPBB, LiveOutVPBBs);
+  reconstructEarlyExitSSA(Plan, VPDT, Exits, HeaderVPBB, LatchVPBB,
+                          LiveOutVPBBs);
 
   return true;
 }
