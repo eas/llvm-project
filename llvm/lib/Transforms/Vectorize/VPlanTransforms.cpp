@@ -3038,7 +3038,7 @@ static void reconstructEarlyExitSSA(VPlan &Plan, VPDominatorTree &VPDT,
         {{EarlyExitingVPBB, CondToExit}, {HeaderVPBB, Plan.getFalse()}},
         LatchVPBB);
 
-    CondToExit->replaceUsesWithIf(New, [&](VPUser &U, unsigned I) {
+    CondToExit->replaceUsesWithIf(New, [&](VPUser &U, unsigned) {
       auto &R = cast<VPRecipeBase>(U);
       return VPDT.dominates(LatchVPBB, R.getParent()) &&
              R.getVPSingleValue() != New;

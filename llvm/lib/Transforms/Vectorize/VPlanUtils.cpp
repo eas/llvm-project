@@ -1239,6 +1239,7 @@ static VPValue *reconstructSSAImpl(VPBasicBlock *VPBB,
     Phi->addIncoming(reconstructSSAImpl(cast<VPBasicBlock>(Pred), Defs));
 
   // Fold away trivial phis.
+  // TODO: Remove phi users which have become trivial too.
   if (all_equal(Phi->incoming_values())) {
     VPValue *Common = Phi->getIncomingValue(0);
     Phi->replaceAllUsesWith(Common);
