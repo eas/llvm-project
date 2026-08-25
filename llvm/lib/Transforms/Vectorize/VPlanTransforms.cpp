@@ -3034,9 +3034,9 @@ static void reconstructEarlyExitSSA(VPlan &Plan, VPDominatorTree &VPDT,
   // Reconstruct all CondToExits. The condition is false on any path that
   // doesn't go through the exiting block.
   for (auto [EarlyExitingVPBB, _, CondToExit] : Exits) {
-    VPValue *New = vputils::reconstructSSA(
-        {{EarlyExitingVPBB, CondToExit}, {HeaderVPBB, Plan.getFalse()}},
-        LatchVPBB);
+    DenseMap<VPBasicBlock *, VPValue *> Defs = {{EarlyExitingVPBB, CondToExit},
+                                                {HeaderVPBB, Plan.getFalse()}};
+    VPValue *New = vputils::reconstructSSA(LatchVPBB, Defs);
 
     CondToExit->replaceUsesWithIf(New, [&](VPUser &U, unsigned) {
       auto &R = cast<VPRecipeBase>(U);
@@ -3054,10 +3054,10 @@ static void reconstructEarlyExitSSA(VPlan &Plan, VPDominatorTree &VPDT,
                  m_CombineOr(m_ExtractLastPart(m_VPValue(LiveOut)),
                              m_ExtractLane(m_VPValue(), m_VPValue(LiveOut)))))
         continue;
-      VPValue *New = vputils::reconstructSSA(
-          {{LiveOut->getDefiningRecipe()->getParent(), LiveOut},
-           {HeaderVPBB, Plan.getPoison(LiveOut->getScalarType())}},
-          LatchVPBB);
+      DenseMap<VPBasicBlock *, VPValue *> Defs = {
+          {LiveOut->getDefiningRecipe()->getParent(), LiveOut},
+          {HeaderVPBB, Plan.getPoison(LiveOut->getScalarType())}};
+      VPValue *New = vputils::reconstructSSA(LatchVPBB, Defs);
       R.replaceUsesOfWith(LiveOut, New);
     }
 }
@@ -3270,24 +3270,23 @@ bool VPlanTransforms::handleUncountableEarlyExits(
               m_BranchOnCond(m_VPValue(CondOfEarlyExitingVPBB)));
     assert(Matched && "Terminator must be BranchOnCond");
 
-      VPBuilder EarlyExitingBuilder(EarlyExitingVPBB->getTerminator());
-      auto *CondToEarlyExit =
-          TrueSucc == ExitBlock
-              ? CondOfEarlyExitingVPBB
-              : EarlyExitingBuilder.createNot(CondOfEarlyExitingVPBB);
+    VPBuilder EarlyExitingBuilder(EarlyExitingVPBB->getTerminator());
+    auto *CondToEarlyExit =
+        TrueSucc == ExitBlock
+            ? CondOfEarlyExitingVPBB
+            : EarlyExitingBuilder.createNot(CondOfEarlyExitingVPBB);
 
-      assert((isa<VPIRValue>(CondOfEarlyExitingVPBB) ||
-              !VPDT.properlyDominates(EarlyExitingVPBB, LatchVPBB) ||
-              VPDT.properlyDominates(
-                  CondOfEarlyExitingVPBB->getDefiningRecipe()->getParent(),
-                  LatchVPBB)) &&
-             "exit condition must dominate the latch");
-      Exits.push_back({
-          EarlyExitingVPBB,
-          ExitBlock,
-          CondToEarlyExit,
-      });
-    }
+    assert((isa<VPIRValue>(CondOfEarlyExitingVPBB) ||
+            !VPDT.properlyDominates(EarlyExitingVPBB, LatchVPBB) ||
+            VPDT.properlyDominates(
+                CondOfEarlyExitingVPBB->getDefiningRecipe()->getParent(),
+                LatchVPBB)) &&
+           "exit condition must dominate the latch");
+    Exits.push_back({
+        EarlyExitingVPBB,
+        ExitBlock,
+        CondToEarlyExit,
+    });
   }
 
   assert(!Exits.empty() && "must have at least one early exit");
