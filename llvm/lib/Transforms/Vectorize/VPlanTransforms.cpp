@@ -1667,33 +1667,6 @@ void VPlanTransforms::simplifyReverses(VPlan &Plan) {
         R.getVPSingleValue()->replaceAllUsesWith(X);
 }
 
-/// Reassociate (headermask && x) && y -> headermask && (x && y) to allow the
-/// header mask to be simplified further when tail folding, e.g. in
-/// optimizeEVLMasks.
-static void reassociateHeaderMask(VPlan &Plan) {
-  VPValue *HeaderMask = Plan.getVectorLoopRegion()->getHeaderMask();
-  if (!HeaderMask)
-    return;
-
-  SmallVector<VPUser *> Worklist;
-  for (VPUser *U : HeaderMask->users())
-    if (match(U, m_LogicalAnd(m_Specific(HeaderMask), m_VPValue())))
-      append_range(Worklist, cast<VPSingleDefRecipe>(U)->users());
-
-  while (!Worklist.empty()) {
-    auto *R = dyn_cast<VPSingleDefRecipe>(Worklist.pop_back_val());
-    VPValue *X, *Y;
-    if (!R || !match(R, m_LogicalAnd(
-                            m_LogicalAnd(m_Specific(HeaderMask), m_VPValue(X)),
-                            m_VPValue(Y))))
-      continue;
-    append_range(Worklist, R->users());
-    VPBuilder Builder(R);
-    R->replaceAllUsesWith(
-        Builder.createLogicalAnd(HeaderMask, Builder.createLogicalAnd(X, Y)));
-  }
-}
-
 static std::optional<Instruction::BinaryOps>
 getUnmaskedDivRemOpcode(Intrinsic::ID ID) {
   switch (ID) {
@@ -1808,23 +1781,6 @@ static void narrowToSingleScalarRecipes(VPlan &Plan) {
   }
 }
 
-/// Try to see if all of \p Blend's masks share a common value logically and'ed
-/// and remove it from the masks.
-static void removeCommonBlendMask(VPBlendRecipe *Blend) {
-  if (Blend->isNormalized())
-    return;
-  VPValue *CommonEdgeMask;
-  if (!match(Blend->getMask(0),
-             m_LogicalAnd(m_VPValue(CommonEdgeMask), m_VPValue())))
-    return;
-  for (unsigned I = 0; I < Blend->getNumIncomingValues(); I++)
-    if (!match(Blend->getMask(I),
-               m_LogicalAnd(m_Specific(CommonEdgeMask), m_VPValue())))
-      return;
-  for (unsigned I = 0; I < Blend->getNumIncomingValues(); I++)
-    Blend->setMask(I, Blend->getMask(I)->getDefiningRecipe()->getOperand(1));
-}
-
 /// Normalize and simplify VPBlendRecipes. Should be run after simplifyRecipes
 /// to make sure the masks are simplified.
 static void simplifyBlends(VPlan &Plan) {
@@ -1834,8 +1790,6 @@ static void simplifyBlends(VPlan &Plan) {
       auto *Blend = dyn_cast<VPBlendRecipe>(&R);
       if (!Blend)
         continue;
-
-      removeCommonBlendMask(Blend);
 
       // Try to remove redundant blend recipes.
       SmallPtrSet<VPValue *, 4> UniqueValues;
@@ -1857,24 +1811,10 @@ static void simplifyBlends(VPlan &Plan) {
       // Normalize the blend so its first incoming value is used as the initial
       // value with the others blended into it.
 
-      unsigned StartIndex = 0;
-      for (unsigned I = 0; I != Blend->getNumIncomingValues(); ++I) {
-        // If a value's mask is used only by the blend then is can be deadcoded.
-        // TODO: Find the most expensive mask that can be deadcoded, or a mask
-        // that's used by multiple blends where it can be removed from them all.
-        VPValue *Mask = Blend->getMask(I);
-        if (Mask->hasOneUse() && !match(Mask, m_False())) {
-          StartIndex = I;
-          break;
-        }
-      }
-
       SmallVector<VPValue *, 4> OperandsWithMask;
-      OperandsWithMask.push_back(Blend->getIncomingValue(StartIndex));
+      OperandsWithMask.push_back(Blend->getIncomingValue(0));
 
-      for (unsigned I = 0; I != Blend->getNumIncomingValues(); ++I) {
-        if (I == StartIndex)
-          continue;
+      for (unsigned I = 1; I != Blend->getNumIncomingValues(); ++I) {
         OperandsWithMask.push_back(Blend->getIncomingValue(I));
         OperandsWithMask.push_back(Blend->getMask(I));
       }
@@ -1884,7 +1824,7 @@ static void simplifyBlends(VPlan &Plan) {
                             OperandsWithMask, *Blend, Blend->getDebugLoc());
       NewBlend->insertBefore(&R);
 
-      VPValue *DeadMask = Blend->getMask(StartIndex);
+      VPValue *DeadMask = Blend->getMask(0);
       Blend->replaceAllUsesWith(NewBlend);
       Blend->eraseFromParent();
       vputils::recursivelyDeleteDeadRecipes(DeadMask);
@@ -2573,14 +2513,12 @@ bool VPlanTransforms::removeBranchOnConst(VPlan &Plan, bool OnlyLatches) {
 void VPlanTransforms::optimize(VPlan &Plan) {
   RUN_VPLAN_PASS(removeRedundantInductionCasts, Plan);
 
-  RUN_VPLAN_PASS(reassociateHeaderMask, Plan);
   RUN_VPLAN_PASS(simplifyRecipes, Plan);
   RUN_VPLAN_PASS(removeDeadRecipes, Plan);
   RUN_VPLAN_PASS(simplifyBlends, Plan);
   RUN_VPLAN_PASS(legalizeAndOptimizeInductions, Plan);
   RUN_VPLAN_PASS(narrowToSingleScalarRecipes, Plan);
   RUN_VPLAN_PASS(removeRedundantExpandSCEVRecipes, Plan);
-  RUN_VPLAN_PASS(reassociateHeaderMask, Plan);
   RUN_VPLAN_PASS(simplifyRecipes, Plan);
   RUN_VPLAN_PASS(removeBranchOnConst, Plan, /*OnlyLatches=*/false);
   RUN_VPLAN_PASS(simplifyReverses, Plan);

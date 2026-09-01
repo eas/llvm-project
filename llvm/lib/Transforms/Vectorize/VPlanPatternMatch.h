@@ -869,11 +869,42 @@ inline auto m_c_Select(const Op0_t &Op0, const Op1_t &Op1, const Op2_t &Op2) {
   return m_CombineOr(m_Select(Op0, Op1, Op2), m_Select(m_Not(Op0), Op2, Op1));
 }
 
+/// Match a select-like recipe with either equivalent condition polarity.
+template <typename Op0_t, typename Op1_t, typename Op2_t>
+inline auto m_c_SelectLike(const Op0_t &Op0, const Op1_t &Op1,
+                           const Op2_t &Op2) {
+  return m_CombineOr(m_SelectLike(Op0, Op1, Op2),
+                     m_SelectLike(m_Not(Op0), Op2, Op1));
+}
+
 template <typename Op0_t, typename Op1_t>
 inline auto m_LogicalAnd(const Op0_t &Op0, const Op1_t &Op1) {
   return m_CombineOr(
       m_VPInstruction<VPInstruction::LogicalAnd, Op0_t, Op1_t>(Op0, Op1),
       m_Select(Op0, Op1, m_False()));
+}
+
+/// Match a specific mask \p In, or a combination of it (logical-and In, Out).
+/// Returns the remaining part \p Out if so, or nullptr otherwise.
+template <typename Op0_t, typename Op1_t> struct RemoveMask_match {
+  Op0_t In;
+  Op1_t &Out;
+
+  RemoveMask_match(const Op0_t &In, Op1_t &Out) : In(In), Out(Out) {}
+
+  template <typename OpTy> bool match(OpTy *V) const {
+    if (m_Specific(In).match(V)) {
+      Out = nullptr;
+      return true;
+    }
+    return m_LogicalAnd(m_Specific(In), m_VPValue(Out)).match(V);
+  }
+};
+
+template <typename Op0_t, typename Op1_t>
+inline RemoveMask_match<Op0_t, Op1_t> m_RemoveMask(const Op0_t &In,
+                                                   Op1_t &Out) {
+  return RemoveMask_match<Op0_t, Op1_t>(In, Out);
 }
 
 template <typename Op0_t, typename Op1_t>

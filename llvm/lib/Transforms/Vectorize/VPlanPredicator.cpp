@@ -25,6 +25,13 @@ using namespace VPlanPatternMatch;
 
 namespace {
 class VPPredicator {
+  VPlan &Plan;
+
+  // Scan the body of the loop in a topological order to visit each basic
+  // block after having visited its predecessor basic blocks.
+  ReversePostOrderTraversal<VPBlockShallowTraversalWrapper<VPBlockBase *>> RPOT;
+  DenseMap<const VPBlockBase *, unsigned> BlockIndex;
+
   /// Builder to construct recipes to compute masks.
   VPBuilder Builder;
 
@@ -33,9 +40,6 @@ class VPPredicator {
 
   /// Post-dominator tree for the VPlan.
   VPPostDominatorTree VPPDT;
-
-  /// Post-dominator frontier for the VPlan.
-  VPPostDominanceFrontier VPPDF;
 
   /// When we if-convert we need to create edge masks. We have to cache values
   /// so that we don't end up with exponential recursion/IR.
@@ -53,6 +57,15 @@ class VPPredicator {
   /// Computes and return the predicate of the edge between \p Src and \p Dst,
   /// possibly inserting new recipes at \p Dst (using Builder's insertion point)
   VPValue *createEdgeMask(const VPBasicBlock *Src, const VPBasicBlock *Dst);
+
+  /// Create a logical-and of a source mask and edge condition, keeping the
+  /// header mask outermost when present. E.g. createMaskAnd("H && M", "C")
+  /// would result in "H && (M && C)". The edge condition must not contain the
+  /// header mask.
+  VPValue *createMaskAnd(VPValue *SrcMask, VPValue *EdgeCond, DebugLoc DL);
+
+  /// Create a logical-or, factoring out a common header mask if present.
+  VPValue *createMaskOr(VPValue *LHS, VPValue *RHS, DebugLoc DL);
 
   /// Record \p Mask as the *entry* mask of \p VPBB, which is expected to not
   /// already have a mask.
@@ -81,41 +94,27 @@ class VPPredicator {
     return VPBB->getFirstNonPhi();
   }
 
-  /// Returns where to insert new blends in \p VPBB.
-  VPBasicBlock::iterator getBlendInsertPoint(VPBasicBlock *VPBB) {
-    VPBasicBlock::iterator It = getMaskInsertPoint(VPBB);
-    if (It == VPBB->end())
-      return It;
-    // Insert after any incoming edge masks if they were already inserted.
-    for (VPBlockBase *Pred : VPBB->predecessors())
-      if (VPValue *EdgeMask = getEdgeMask(cast<VPBasicBlock>(Pred), VPBB))
-        if (VPRecipeBase *EdgeR = EdgeMask->getDefiningRecipe())
-          if (EdgeR->getParent() == VPBB &&
-              !VPDT.properlyDominates(EdgeR, &*It)) {
-            It = std::next(EdgeR->getIterator());
-            if (It == VPBB->end())
-              return It;
-          }
-    return It;
-  }
+  using BlendTermTy = std::pair<VPValue *, VPBasicBlock *>;
 
-  using EdgeTy = std::pair<const VPBasicBlock *, const VPBasicBlock *>;
+  /// Return true if every path starting at \p Root reaches one of \p Blocks.
+  /// All blocks in \p Blocks are expected to be dominated by \p Root.
+  bool
+  isJointlyPostDominated(const VPBasicBlock *Root,
+                         const SmallPtrSetImpl<VPBasicBlock *> &Blocks) const;
 
-  /// Compute the set of edges that are "furthest up" in the CFG for each
-  /// incoming value of \p Phi.
-  MapVector<EdgeTy, VPValue *> computeBlendEdges(VPPhi *Phi);
-
-  /// Given a set of \p Edges that each can reach \p VPBB, try to see if there
-  /// is a block in-mask that can be used for its blend mask. Only valid when
-  /// there's exactly one unique incoming value on the paths from Edges to VPBB.
-  VPValue *tryFindBlockInMask(ArrayRef<EdgeTy> Edges, VPBasicBlock *VPBB);
-
-  /// Given a set of \p Edges that each can reach \p VPBB, return the OR of all
-  /// edges, or an equivalent block in-mask.
-  VPValue *createBlendMaskForEdges(ArrayRef<EdgeTy> Edges, VPBasicBlock *VPBB);
+  /// Compute an ordered sequence of incoming values and the blocks whose
+  /// in-masks select them. Consecutive terms with the same value are combined
+  /// when their masks can be represented by a common dominator's in-mask.
+  SmallVector<BlendTermTy> computeBlendTerms(VPPhi *Phi) const;
 
 public:
-  VPPredicator(VPlan &Plan) : VPDT(Plan), VPPDT(Plan), VPPDF(VPPDT) {}
+  VPPredicator(VPlan &Plan)
+      : Plan(Plan), RPOT(Plan.getVectorLoopRegion()->getEntryBasicBlock()),
+        VPDT(Plan), VPPDT(Plan) {
+    for (auto [Idx, BB] : enumerate(RPOT)) {
+      BlockIndex[BB] = Idx;
+    }
+  }
 
   /// Returns the *entry* mask for \p VPBB.
   VPValue *getBlockInMask(const VPBasicBlock *VPBB) const {
@@ -132,8 +131,42 @@ public:
 
   /// Convert phi recipes in \p VPBB to VPBlendRecipes.
   void convertPhisToBlends(VPBasicBlock *VPBB);
+
+  /// Perform predication and linearization of the Plan.
+  void run();
 };
 } // namespace
+
+VPValue *VPPredicator::createMaskAnd(VPValue *SrcMask, VPValue *EdgeCond,
+                                     DebugLoc DL) {
+  VPValue *HeaderMask = Plan.getVectorLoopRegion()->getHeaderMask();
+  VPValue *Remainder = nullptr;
+  if (!HeaderMask || !match(SrcMask, m_RemoveMask(HeaderMask, Remainder)))
+    return Builder.createLogicalAnd(SrcMask, EdgeCond, DL);
+
+  [[maybe_unused]] VPValue *EdgeRemainder = nullptr;
+  assert(!match(EdgeCond, m_RemoveMask(HeaderMask, EdgeRemainder)) &&
+         "Edge condition must not contain the header mask");
+
+  if (!Remainder)
+    return Builder.createLogicalAnd(HeaderMask, EdgeCond, DL);
+  return Builder.createLogicalAnd(
+      HeaderMask, Builder.createLogicalAnd(Remainder, EdgeCond, DL), DL);
+}
+
+VPValue *VPPredicator::createMaskOr(VPValue *LHS, VPValue *RHS, DebugLoc DL) {
+  VPValue *HeaderMask = Plan.getVectorLoopRegion()->getHeaderMask();
+  VPValue *LHSRemainder = nullptr;
+  VPValue *RHSRemainder = nullptr;
+  if (!HeaderMask || !match(LHS, m_RemoveMask(HeaderMask, LHSRemainder)) ||
+      !match(RHS, m_RemoveMask(HeaderMask, RHSRemainder)))
+    return Builder.createOr(LHS, RHS, DL);
+
+  if (!LHSRemainder || !RHSRemainder)
+    return HeaderMask;
+  return Builder.createLogicalAnd(
+      HeaderMask, Builder.createOr(LHSRemainder, RHSRemainder, DL), DL);
+}
 
 VPValue *VPPredicator::createEdgeMask(const VPBasicBlock *Src,
                                       const VPBasicBlock *Dst) {
@@ -171,7 +204,7 @@ VPValue *VPPredicator::createEdgeMask(const VPBasicBlock *Src,
     // The bitwise 'And' of SrcMask and EdgeMask introduces new UB if SrcMask
     // is false and EdgeMask is poison. Avoid that by using 'LogicalAnd'
     // instead which generates 'select i1 SrcMask, i1 EdgeMask, i1 false'.
-    EdgeMask = Builder.createLogicalAnd(SrcMask, EdgeMask, Term->getDebugLoc());
+    EdgeMask = createMaskAnd(SrcMask, EdgeMask, Term->getDebugLoc());
   }
 
   return setEdgeMask(Src, Dst, EdgeMask);
@@ -208,7 +241,7 @@ void VPPredicator::createBlockInMask(VPBasicBlock *VPBB) {
       continue;
     }
 
-    BlockMask = Builder.createOr(BlockMask, EdgeMask, {});
+    BlockMask = createMaskOr(BlockMask, EdgeMask, {});
   }
 
   setBlockInMask(VPBB, BlockMask);
@@ -247,7 +280,7 @@ void VPPredicator::createSwitchEdgeMasks(const VPInstruction *SI) {
     for (VPValue *V : drop_begin(Conds))
       Mask = Builder.createOr(Mask, V);
     if (SrcMask)
-      Mask = Builder.createLogicalAnd(SrcMask, Mask);
+      Mask = createMaskAnd(SrcMask, Mask, {});
     setEdgeMask(Src, Dst, Mask);
 
     // 2. Create the mask for the default destination, which is reached if
@@ -260,7 +293,7 @@ void VPPredicator::createSwitchEdgeMasks(const VPInstruction *SI) {
   if (DefaultMask) {
     DefaultMask = Builder.createNot(DefaultMask);
     if (SrcMask)
-      DefaultMask = Builder.createLogicalAnd(SrcMask, DefaultMask);
+      DefaultMask = createMaskAnd(SrcMask, DefaultMask, {});
   } else {
     // There are no destinations other than the default destination, so this is
     // an unconditional branch.
@@ -269,129 +302,73 @@ void VPPredicator::createSwitchEdgeMasks(const VPInstruction *SI) {
   setEdgeMask(Src, DefaultDst, DefaultMask);
 }
 
-// Start by keeping track of what edges lead to which value. Then see if any
-// node has the same value for all outgoing edges. If so then propagate that
-// value up to every node it postdominates. E.g:
-//
-//    Entry      Edges =  {C->ɸ : %x, D->ɸ : %x, F->ɸ : %y}
-//    /   \            [C,D,F all outgoing edges equal: go up postdom frontier]
-//   A     B           ~> {A->C : %x, A->D : %x, Entry->B : %y}
-//  / \    |\          [A all outgoing edges equal: go up postdom frontier]
-// C   D   | E         ~> {Entry->A : %x, Entry->B : %y}
-//  \   \  |/
-//   \  |  F
-//    \ | /
-//      ɸ = phi [%x, C], [%x, D], [%y, F]
-MapVector<VPPredicator::EdgeTy, VPValue *>
-VPPredicator::computeBlendEdges(VPPhi *Phi) {
-  MapVector<EdgeTy, VPValue *> Edges;
+bool VPPredicator::isJointlyPostDominated(
+    const VPBasicBlock *Root,
+    const SmallPtrSetImpl<VPBasicBlock *> &Blocks) const {
+  assert(
+      all_of(Blocks,
+             [&](VPBasicBlock *VPBB) { return VPDT.dominates(Root, VPBB); }) &&
+      "Root must dominate all blocks");
 
-  // Mark the given edge as providing the value \p V.
-  auto AddEdge = [&Edges](const VPBlockBase *From, const VPBlockBase *To,
-                          VPValue *V) {
-    EdgeTy Edge = {cast<VPBasicBlock>(From), cast<VPBasicBlock>(To)};
-    assert((!Edges.contains(Edge) || Edges.lookup(Edge) == V) &&
-           "Clobbering an edge?");
-    Edges[Edge] = V;
-  };
-
-  for (auto [InVal, InVPBB] : Phi->incoming_values_and_blocks())
-    AddEdge(InVPBB, Phi->getParent(), InVal);
-
-  // Don't optimize any phis used to mask tail values of reductions during tail
-  // folding until handleFindLastReductions can match the new form.
-  VPlan *Plan = Phi->getParent()->getPlan();
-  if (Phi->getParent() == Plan->getVectorLoopRegion()->getExiting() &&
-      any_of(Phi->incoming_values(), IsaPred<VPReductionPHIRecipe>))
-    return Edges;
-
-  SetVector<const VPBlockBase *> Worklist(from_range, Phi->incoming_blocks());
+  SmallPtrSet<const VPBasicBlock *, 16> Visited;
+  SmallVector<const VPBasicBlock *> Worklist(1, Root);
   while (!Worklist.empty()) {
-    auto *VPBB = cast<VPBasicBlock>(Worklist.pop_back_val());
-
-    // Check that all outgoing edges from VPBB have the same value.
-    SmallVector<EdgeTy> OutEdges;
-    for (const VPBlockBase *Succ : VPBB->getSuccessors())
-      OutEdges.emplace_back(VPBB, cast<VPBasicBlock>(Succ));
-    auto OutVals =
-        map_range(OutEdges, [&Edges](EdgeTy E) { return Edges.lookup(E); });
-    VPValue *Common = *OutVals.begin();
-    if (!Common || !all_equal(OutVals))
+    const VPBasicBlock *VPBB = Worklist.pop_back_val();
+    if (!Visited.insert(VPBB).second || Blocks.contains(VPBB))
       continue;
-
-    // They have the same value: we can move the edges up.
-    for (EdgeTy Edge : OutEdges)
-      Edges.erase(Edge);
-
-    // If the value is a phi postdominated by VPBB, then look through the inner
-    // incoming values instead of propagating the phi.
-    if (auto *Phi = dyn_cast<VPPhi>(Common))
-      if (Phi->hasOneUse() && VPPDT.dominates(VPBB, Phi->getParent())) {
-        for (auto [InV, InVPBB] : Phi->incoming_values_and_blocks()) {
-          AddEdge(InVPBB, Phi->getParent(), InV);
-          Worklist.insert(InVPBB);
-        }
-        continue;
-      }
-
-    // Iterate up through the post dominance frontier.
-    assert(VPPDF.find(VPBB) != VPPDF.end() &&
-           "VPBB must have a post-dominance frontier entry");
-    for (const VPBlockBase *Frontier : VPPDF.find(VPBB)->second) {
-      for (const VPBlockBase *FrontierSucc : Frontier->getSuccessors())
-        if (VPPDT.dominates(VPBB, FrontierSucc))
-          AddEdge(Frontier, FrontierSucc, Common);
-      Worklist.insert(cast<VPBasicBlock>(Frontier));
-    }
+    if (VPBB->getNumSuccessors() == 0)
+      return false;
+    for (const VPBlockBase *Succ : VPBB->getSuccessors())
+      Worklist.push_back(cast<VPBasicBlock>(Succ));
   }
-
-  return Edges;
+  return true;
 }
 
-VPValue *VPPredicator::tryFindBlockInMask(ArrayRef<EdgeTy> Edges,
-                                          VPBasicBlock *VPBB) {
-  // If the nearest common postdominator to all of Edges destinations isn't VPBB
-  // then we can use its block in-mask. E.g:
-  //
-  //  A  ...  B
-  //   \   \ /
-  //    \   C
-  //     \ /
-  // ...  D   ...
-  //    \ |  /
-  //     VPBB
-  //
-  // If the edges are A->D and B->C, PostDom will be D. We can reuse Ds block
-  // in-mask. Only valid when there is only one unique incoming value flowing
-  // from the edges to VPBB.
-  const VPBasicBlock *PostDom = Edges[0].second;
-  for (auto [_, DstVPBB] : drop_begin(Edges))
-    PostDom =
-        cast<VPBasicBlock>(VPPDT.findNearestCommonDominator(PostDom, DstVPBB));
-  assert(VPPDT.dominates(VPBB, PostDom) && "VPBB doesn't postdominate edges");
-  if (PostDom == VPBB)
-    return nullptr;
-  return getBlockInMask(PostDom);
-}
+SmallVector<VPPredicator::BlendTermTy>
+VPPredicator::computeBlendTerms(VPPhi *Phi) const {
+  SmallVector<BlendTermTy> Terms;
+  for (auto [V, VPBB] : Phi->incoming_values_and_blocks())
+    Terms.emplace_back(V, const_cast<VPBasicBlock *>(cast<VPBasicBlock>(VPBB)));
 
-VPValue *VPPredicator::createBlendMaskForEdges(ArrayRef<EdgeTy> Edges,
-                                               VPBasicBlock *VPBB) {
-  VPValue *Mask = nullptr;
-  for (auto [Src, ConstDst] : Edges) {
-    auto *Dst = const_cast<VPBasicBlock *>(ConstDst);
-    VPValue *EdgeMask;
-    {
-      VPBuilder::InsertPointGuard Guard(Builder);
-      Builder.setInsertPoint(Dst, getMaskInsertPoint(Dst));
-      EdgeMask = createEdgeMask(Src, Dst);
+  sort(Terms, [this](const BlendTermTy &L, const BlendTermTy &R) {
+    return BlockIndex.lookup(L.second) < BlockIndex.lookup(R.second);
+  });
+  assert(all_of(zip(Terms, drop_begin(Terms)),
+                [](const auto &Pair) {
+                  const auto &[L, R] = Pair;
+                  return L.second != R.second || L.first == R.first;
+                }) &&
+         "Different values provided by the same block");
+
+  // If a group of consecutive terms have the same value, and the blocks' common
+  // dominator is jointly post-dominated by those blocks, replace the entire
+  // group of these terms with a sinle term using that common dominator's mask.
+  SmallVector<BlendTermTy> Combined;
+  for (ArrayRef<BlendTermTy> RemainingTerms = Terms; !RemainingTerms.empty();) {
+    ArrayRef<BlendTermTy> ConsequtiveTermsUsingSameValue =
+        RemainingTerms.take_while([&](const BlendTermTy &Term) {
+          return Term.first == RemainingTerms.front().first;
+        });
+    SmallPtrSet<VPBasicBlock *, 8> Blocks(
+        from_range, make_second_range(ConsequtiveTermsUsingSameValue));
+    auto *CommonDom = cast<VPBasicBlock>(
+        VPDT.findNearestCommonDominator(iterator_range(Blocks)));
+
+    if (isJointlyPostDominated(CommonDom, Blocks)) {
+      Combined.emplace_back(ConsequtiveTermsUsingSameValue.front().first,
+                            CommonDom);
+    } else {
+      Combined.append(ConsequtiveTermsUsingSameValue.begin(),
+                      ConsequtiveTermsUsingSameValue.end());
     }
-    Mask = Mask ? Builder.createOr(Mask, EdgeMask) : EdgeMask;
+    RemainingTerms =
+        RemainingTerms.drop_front(ConsequtiveTermsUsingSameValue.size());
   }
-  return Mask;
+  return Combined;
 }
 
 void VPPredicator::convertPhisToBlends(VPBasicBlock *VPBB) {
-  Builder.setInsertPoint(VPBB, getBlendInsertPoint(VPBB));
+  Builder.setInsertPoint(VPBB, getMaskInsertPoint(VPBB));
 
   SmallVector<VPPhi *> Phis;
   for (VPRecipeBase &R : VPBB->phis())
@@ -413,40 +390,30 @@ void VPPredicator::convertPhisToBlends(VPBasicBlock *VPBB) {
       continue;
     }
 
-    MapVector<VPValue *, SmallVector<EdgeTy>> InValEdgesMap;
-    for (auto [Edge, Val] : computeBlendEdges(PhiR))
-      InValEdgesMap[Val].push_back(Edge);
-    bool IncomingEdgesUnique =
-        all_of(PhiR->incoming_values(), [&](VPValue *InV) {
-          return is_contained(InValEdgesMap.keys(), InV);
-        });
+    auto Terms = computeBlendTerms(PhiR);
+    SmallVector<VPBasicBlock *> MaskBlocks;
+    for (auto [_, ConstMaskBlock] : Terms)
+      MaskBlocks.push_back(const_cast<VPBasicBlock *>(ConstMaskBlock));
 
-    auto InValEdges = InValEdgesMap.takeVector();
-
-    if (InValEdges.size() == 1) {
-      PhiR->replaceAllUsesWith(InValEdges[0].first);
-      PhiR->eraseFromParent();
-      continue;
-    }
-
-    // Sort the incoming value order to match PhiR as much as possible.
-    llvm::stable_sort(InValEdges, [&PhiR](auto &L, auto &R) {
-      auto InVs = PhiR->incoming_values();
-      return std::distance(InVs.begin(), find(InVs, L.first)) <
-             std::distance(InVs.begin(), find(InVs, R.first));
-    });
+    // The in-mask of the common dominator is true on all paths from an
+    // incoming block to the phi. Remove it from the blend masks.
+    VPBasicBlock *CommonIncomingDom =
+        cast<VPBasicBlock>(VPDT.findNearestCommonDominator(
+            make_range(MaskBlocks.begin(), MaskBlocks.end())));
+    VPValue *CommonIncomingMask = getBlockInMask(CommonIncomingDom);
 
     SmallVector<VPValue *, 2> OperandsWithMask;
-    for (const auto &[InVPV, Edges] : InValEdges) {
-      OperandsWithMask.push_back(InVPV);
-      if (IncomingEdgesUnique) {
-        if (auto *Mask = tryFindBlockInMask(Edges, VPBB)) {
-          OperandsWithMask.push_back(Mask);
-          continue;
-        }
-      }
-      OperandsWithMask.push_back(createBlendMaskForEdges(Edges, VPBB));
+    for (auto [V, ConstMaskBlock] : Terms) {
+      auto *MaskBlock = const_cast<VPBasicBlock *>(ConstMaskBlock);
+      VPValue *Mask = getBlockInMask(MaskBlock);
+      VPValue *RemainingMask = nullptr;
+      bool RemovedCommonMask =
+          CommonIncomingMask && Mask &&
+          match(Mask, m_RemoveMask(CommonIncomingMask, RemainingMask));
+      VPValue *BlendMask = RemovedCommonMask ? RemainingMask : Mask;
+      OperandsWithMask.append({V, BlendMask ? BlendMask : Plan.getTrue()});
     }
+
     PHINode *IRPhi = cast_or_null<PHINode>(PhiR->getUnderlyingValue());
     auto *Blend =
         new VPBlendRecipe(IRPhi, OperandsWithMask, *PhiR, PhiR->getDebugLoc());
@@ -456,17 +423,8 @@ void VPPredicator::convertPhisToBlends(VPBasicBlock *VPBB) {
   }
 }
 
-void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan) {
-  // Nested loop regions (outer-loop vectorization) are not supported yet.
-  if (Plan.isOuterLoop())
-    return;
-  VPRegionBlock *LoopRegion = Plan.getVectorLoopRegion();
-  // Scan the body of the loop in a topological order to visit each basic block
-  // after having visited its predecessor basic blocks.
-  VPBasicBlock *Header = LoopRegion->getEntryBasicBlock();
-  ReversePostOrderTraversal<VPBlockShallowTraversalWrapper<VPBlockBase *>> RPOT(
-      Header);
-  VPPredicator Predicator(Plan);
+void VPPredicator::run() {
+  VPBasicBlock *Header = Plan.getVectorLoopRegion()->getEntryBasicBlock();
   for (VPBlockBase *VPB : RPOT) {
     // Non-outer regions with VPBBs only are supported at the moment.
     auto *VPBB = cast<VPBasicBlock>(VPB);
@@ -474,9 +432,9 @@ void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan) {
     // convert all phi recipes of VPBB to blend recipes unless VPBB is the
     // header.
     if (VPBB != Header)
-      Predicator.createBlockInMask(VPBB);
+      createBlockInMask(VPBB);
 
-    VPValue *BlockMask = Predicator.getBlockInMask(VPBB);
+    VPValue *BlockMask = getBlockInMask(VPBB);
     if (!BlockMask)
       continue;
 
@@ -489,7 +447,7 @@ void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan) {
 
   for (VPBlockBase *VPBB : reverse(RPOT))
     if (VPBB != Header)
-      Predicator.convertPhisToBlends(cast<VPBasicBlock>(VPBB));
+      convertPhisToBlends(cast<VPBasicBlock>(VPBB));
 
   // Linearize the blocks of the loop into one serial chain.
   VPBlockBase *PrevVPBB = nullptr;
@@ -507,4 +465,11 @@ void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan) {
 
     PrevVPBB = VPBB;
   }
+}
+
+void VPlanTransforms::introduceMasksAndLinearize(VPlan &Plan) {
+  // Nested loop regions (outer-loop vectorization) are not supported yet.
+  if (Plan.isOuterLoop())
+    return;
+  VPPredicator(Plan).run();
 }
