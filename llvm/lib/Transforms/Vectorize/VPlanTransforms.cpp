@@ -1474,10 +1474,10 @@ static VPValue *simplifyRecipe(VPSingleDefRecipe *Def) {
     return Def;
   }
 
-  // Simplify MaskedCond with no block mask to its single operand.
-  if (match(Def, m_VPInstruction<VPInstruction::MaskedCond>()) &&
-      !cast<VPInstruction>(Def)->isMasked())
-    return Def->getOperand(0);
+  // // Simplify MaskedCond with no block mask to its single operand.
+  // if (match(Def, m_VPInstruction<VPInstruction::MaskedCond>()) &&
+  //     !cast<VPInstruction>(Def)->isMasked())
+  //   return Def->getOperand(0);
 
   // Look through ExtractLastLane.
   if (match(Def, m_ExtractLastLane(m_VPValue(A)))) {
@@ -2925,10 +2925,6 @@ getRecipesForUncountableExit(SmallVectorImpl<VPInstruction *> &Recipes,
         return std::nullopt;
       Recipes.push_back(cast<VPInstruction>(V->getDefiningRecipe()));
       Recipes.push_back(cast<VPInstruction>(GepR));
-    } else if (match(V, m_VPInstruction<VPInstruction::MaskedCond>(
-                            m_VPValue(Op1)))) {
-      Worklist.push_back(Op1);
-      Recipes.push_back(cast<VPInstruction>(V->getDefiningRecipe()));
     } else
       return std::nullopt;
   }
@@ -2947,6 +2943,44 @@ struct EarlyExitInfo {
   VPIRBasicBlock *EarlyExitVPBB;
   VPValue *CondToExit;
 };
+
+// After handling early exits, the CondToExits and live outs may no longer be in
+// SSA if their defining blocks are predicated. Reconstruct by inserting phis.
+static void reconstructEarlyExitSSA(VPlan &Plan, VPDominatorTree &VPDT,
+                                    ArrayRef<EarlyExitInfo> Exits,
+                                    VPBasicBlock *HeaderVPBB,
+                                    VPBasicBlock *LatchVPBB,
+                                    ArrayRef<VPBasicBlock *> LiveOutVPBBs) {
+  // Reconstruct all CondToExits. The condition is false on any path that
+  // doesn't go through the exiting block.
+  for (auto [EarlyExitingVPBB, _, CondToExit] : Exits) {
+    DenseMap<VPBasicBlock *, VPValue *> Defs = {{EarlyExitingVPBB, CondToExit},
+                                                {HeaderVPBB, Plan.getFalse()}};
+    VPValue *New = vputils::reconstructSSA(LatchVPBB, Defs);
+
+    CondToExit->replaceUsesWithIf(New, [&](VPUser &U, unsigned) {
+      auto &R = cast<VPRecipeBase>(U);
+      return VPDT.dominates(LatchVPBB, R.getParent()) &&
+             R.getVPSingleValue() != New;
+    });
+  }
+
+  // Reconstruct any live outs. The value is poison on any path that didn't pass
+  // through the def's block.
+  for (VPBasicBlock *LiveOutVPBB : LiveOutVPBBs)
+    for (VPRecipeBase &R : *LiveOutVPBB) {
+      VPValue *LiveOut;
+      if (!match(&R,
+                 m_CombineOr(m_ExtractLastPart(m_VPValue(LiveOut)),
+                             m_ExtractLane(m_VPValue(), m_VPValue(LiveOut)))))
+        continue;
+      DenseMap<VPBasicBlock *, VPValue *> Defs = {
+          {LiveOut->getDefiningRecipe()->getParent(), LiveOut},
+          {HeaderVPBB, Plan.getPoison(LiveOut->getScalarType())}};
+      VPValue *New = vputils::reconstructSSA(LatchVPBB, Defs);
+      R.replaceUsesOfWith(LiveOut, New);
+    }
+}
 
 /// Update \p Plan to mask memory operations in the loop based on whether the
 /// early exit is taken or not.
@@ -3133,10 +3167,7 @@ static bool handleUncountableExitsWithSideEffects(
 bool VPlanTransforms::handleUncountableEarlyExits(
     VPlan &Plan, Loop *TheLoop, PredicatedScalarEvolution &PSE,
     DominatorTree &DT, AssumptionCache *AC, UncountableExitStyle Style) {
-#ifndef NDEBUG
   VPDominatorTree VPDT(Plan);
-#endif
-
   auto *MiddleVPBB = VPBlockUtils::getPlainCFGMiddleBlock(Plan);
   auto [HeaderVPBB, LatchVPBB] = VPBlockUtils::getPlainCFGHeaderAndLatch(Plan);
 
@@ -3159,14 +3190,12 @@ bool VPlanTransforms::handleUncountableEarlyExits(
               m_BranchOnCond(m_VPValue(CondOfEarlyExitingVPBB)));
     assert(Matched && "Terminator must be BranchOnCond");
 
-    // Insert the MaskedCond in the EarlyExitingVPBB so the predicator adds
-    // the correct block mask.
     VPBuilder EarlyExitingBuilder(EarlyExitingVPBB->getTerminator());
-    auto *CondToEarlyExit = EarlyExitingBuilder.createNaryOp(
-        VPInstruction::MaskedCond,
+    auto *CondToEarlyExit =
         TrueSucc == ExitBlock
             ? CondOfEarlyExitingVPBB
-            : EarlyExitingBuilder.createNot(CondOfEarlyExitingVPBB));
+            : EarlyExitingBuilder.createNot(CondOfEarlyExitingVPBB);
+
     assert((isa<VPIRValue>(CondOfEarlyExitingVPBB) ||
             !VPDT.properlyDominates(EarlyExitingVPBB, LatchVPBB) ||
             VPDT.properlyDominates(
@@ -3361,6 +3390,12 @@ bool VPlanTransforms::handleUncountableEarlyExits(
     CurrentBB = FalseBB;
     DispatchBuilder.setInsertPoint(CurrentBB);
   }
+
+  VPDT.recalculate(Plan);
+  SmallVector<VPBasicBlock *> LiveOutVPBBs = {MiddleVPBB};
+  append_range(LiveOutVPBBs, VectorEarlyExitVPBBs);
+  reconstructEarlyExitSSA(Plan, VPDT, Exits, HeaderVPBB, LatchVPBB,
+                          LiveOutVPBBs);
 
   return true;
 }
