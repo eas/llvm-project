@@ -511,7 +511,9 @@ define void @multiple_store_load_forward_deps(ptr noalias %A, ptr noalias %B, pt
 ; CHECK-NEXT:            %ld.A = load i32, ptr %gep.A.ld, align 4 ->
 ; CHECK-NEXT:            store i32 %ld.A, ptr %gep.A.st, align 4
 ; CHECK-EMPTY:
-; CHECK-NEXT:        BackwardVectorizable:
+; FIXME: There is a safe distance for this particular access, so we should be
+;        reporting it as BackwardVectorizable.
+; CHECK-NEXT:        BackwardVectorizableButPreventsForwarding:
 ; CHECK-NEXT:            %ld.B = load i32, ptr %gep.B.ld, align 4 ->
 ; CHECK-NEXT:            store i32 %ld.B, ptr %gep.B.st, align 4
 ; CHECK-EMPTY:
